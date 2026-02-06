@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VEO3 Batch Automator - Instale Agora</title>
+    <meta name="description" content="Automatize geração de vídeos em lote no Google Veo 3.1. Instalação fácil em 2 minutos!">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            text-align: center;
+            padding: 60px 20px 40px;
+            color: white;
+        }
+
+        h1 {
+            font-size: 3em;
+            margin-bottom: 20px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .subtitle {
+            font-size: 1.3em;
+            opacity: 0.95;
+            margin-bottom: 10px;
+        }
+
+        .version {
+            background: rgba(255,255,255,0.2);
+            padding: 5px 15px;
+            border-radius: 20px;
+            display: inline-block;
+            margin-top: 10px;
+            font-size: 0.9em;
+        }
+
+        .hero {
+            background: white;
+            border-radius: 20px;
+            padding: 50px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            text-align: center;
+            margin: 40px 0;
+        }
+
+        .install-button {
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px 60px;
+            font-size: 1.5em;
+            font-weight: bold;
+            text-decoration: none;
+            border-radius: 50px;
+            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.4);
+            transition: all 0.3s ease;
+            margin: 20px 0;
+        }
+
+        .install-button:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 15px 40px rgba(102, 126, 234, 0.6);
+        }
+
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin: 40px 0;
+        }
+
+        .feature {
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+
+        .feature-icon {
+            font-size: 3em;
+            margin-bottom: 15px;
+        }
+
+        .feature h3 {
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+
+        .steps {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            margin: 40px 0;
+        }
+
+        .steps h2 {
+            color: #667eea;
+            margin-bottom: 30px;
+            text-align: center;
+            font-size: 2em;
+        }
+
+        .step {
+            display: flex;
+            align-items: start;
+            margin: 30px 0;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 15px;
+            border-left: 5px solid #667eea;
+        }
+
+        .step-number {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5em;
+            font-weight: bold;
+            margin-right: 20px;
+            flex-shrink: 0;
+        }
+
+        .step-content h3 {
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+
+        .faq {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            margin: 40px 0;
+        }
+
+        .faq h2 {
+            color: #667eea;
+            margin-bottom: 30px;
+            text-align: center;
+            font-size: 2em;
+        }
+
+        .faq-item {
+            margin: 20px 0;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+        }
+
+        .faq-question {
+            color: #667eea;
+            font-weight: bold;
+            font-size: 1.1em;
+            margin-bottom: 10px;
+        }
+
+        footer {
+            text-align: center;
+            color: white;
+            padding: 40px 20px;
+            margin-top: 60px;
+        }
+
+        footer a {
+            color: white;
+            text-decoration: underline;
+        }
+
+        .badge {
+            display: inline-block;
+            background: #28a745;
+            color: white;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            margin-left: 10px;
+        }
+
+        @media (max-width: 768px) {
+            h1 {
+                font-size: 2em;
+            }
+
+            .hero {
+                padding: 30px 20px;
+            }
+
+            .install-button {
+                padding: 15px 40px;
+                font-size: 1.2em;
+            }
+
+            .step {
+                flex-direction: column;
+                text-align: center;
+            }
+
+            .step-number {
+                margin: 0 auto 15px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎬 VEO3 Batch Automator</h1>
+            <p class="subtitle">Automatize geração de vídeos em lote no Google Veo 3.1</p>
+            <span class="version">v0.9.1 <span class="badge">PRONTO</span></span>
+        </header>
+
+        <div class="hero">
+            <h2>⚡ Instalação Super Fácil</h2>
+            <p style="font-size: 1.2em; color: #666; margin: 20px 0;">
+                Clique no botão abaixo e comece a usar em <strong>2 minutos</strong>!
+            </p>
+            <a href="https://raw.githubusercontent.com/julio-felipe/veo3-batch-automator/main/veo3-batch-automator.user.js"
+               class="install-button">
+                📥 INSTALAR AGORA
+            </a>
+            <p style="color: #999; margin-top: 20px; font-size: 0.9em;">
+                ✅ Grátis • ✅ Sem cadastro • ✅ Funciona em todos os navegadores
+            </p>
+        </div>
+
+        <div class="features">
+            <div class="feature">
+                <div class="feature-icon">🚀</div>
+                <h3>Delays Humanos</h3>
+                <p>Simula comportamento natural com delays de 3-7 segundos entre prompts</p>
+            </div>
+            <div class="feature">
+                <div class="feature-icon">📥</div>
+                <h3>2 Fases</h3>
+                <p>Envia todos os prompts primeiro, depois baixa todos os vídeos</p>
+            </div>
+            <div class="feature">
+                <div class="feature-icon">🎯</div>
+                <h3>Numeração</h3>
+                <p>Vídeos salvos como 001.mp4, 002.mp4, 003.mp4 automaticamente</p>
+            </div>
+            <div class="feature">
+                <div class="feature-icon">⏸️</div>
+                <h3>Pausar/Retomar</h3>
+                <p>Controle total: pause e retome quando quiser</p>
+            </div>
+            <div class="feature">
+                <div class="feature-icon">🛡️</div>
+                <h3>Resiliente</h3>
+                <p>Múltiplas estratégias de seleção - sobrevive a atualizações do VEO3</p>
+            </div>
+            <div class="feature">
+                <div class="feature-icon">🌐</div>
+                <h3>Multi-browser</h3>
+                <p>Chrome, Firefox, Safari, Edge - funciona em todos!</p>
+            </div>
+        </div>
+
+        <div class="steps">
+            <h2>📋 Como Instalar</h2>
+
+            <div class="step">
+                <div class="step-number">1</div>
+                <div class="step-content">
+                    <h3>Instale o Tampermonkey</h3>
+                    <p>
+                        Escolha seu navegador e instale a extensão Tampermonkey:
+                    </p>
+                    <ul style="margin-top: 10px; margin-left: 20px;">
+                        <li><a href="https://chrome.google.com/webstore/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfobp" target="_blank">Chrome</a></li>
+                        <li><a href="https://addons.mozilla.org/firefox/addon/tampermonkey/" target="_blank">Firefox</a></li>
+                        <li><a href="https://apps.apple.com/app/tampermonkey/id1482490089" target="_blank">Safari</a></li>
+                        <li>Edge/Opera: procure "Tampermonkey" na loja de extensões</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="step">
+                <div class="step-number">2</div>
+                <div class="step-content">
+                    <h3>Clique no Botão de Instalação</h3>
+                    <p>
+                        Clique no botão roxo <strong>"INSTALAR AGORA"</strong> no topo desta página.<br>
+                        O Tampermonkey vai abrir automaticamente uma nova aba.
+                    </p>
+                </div>
+            </div>
+
+            <div class="step">
+                <div class="step-number">3</div>
+                <div class="step-content">
+                    <h3>Confirme a Instalação</h3>
+                    <p>
+                        Na aba que abriu, clique no botão <strong>"Instalar"</strong> (ou "Install").<br>
+                        Pronto! O script foi instalado.
+                    </p>
+                </div>
+            </div>
+
+            <div class="step">
+                <div class="step-number">4</div>
+                <div class="step-content">
+                    <h3>Abra o Google Veo 3.1</h3>
+                    <p>
+                        Vá para <a href="https://labs.google/fx/tools/flow/" target="_blank">https://labs.google/fx/tools/flow/</a><br>
+                        Abra qualquer projeto e procure o <strong>botão roxo "VEO"</strong> no canto inferior direito.
+                    </p>
+                </div>
+            </div>
+
+            <div class="step">
+                <div class="step-number">5</div>
+                <div class="step-content">
+                    <h3>Comece a Usar!</h3>
+                    <p>
+                        Clique no botão VEO, cole seus prompts (um por linha) e clique em <strong>"▶ Enviar Todos"</strong>.<br>
+                        Quando terminar, clique em <strong>"📥 Baixar X vídeos"</strong> para baixar tudo!
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <div class="faq">
+            <h2>❓ Perguntas Frequentes</h2>
+
+            <div class="faq-item">
+                <div class="faq-question">🔐 É seguro?</div>
+                <div class="faq-answer">
+                    Sim! O script é 100% open source e não coleta nenhum dado. Você pode ver o código completo no
+                    <a href="https://github.com/julio-felipe/veo3-batch-automator" target="_blank">GitHub</a>.
+                </div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question">💰 É grátis?</div>
+                <div class="faq-answer">
+                    Totalmente grátis! Sem taxas, sem cadastro, sem pegadinhas.
+                </div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question">🔄 Funciona se o VEO3 atualizar?</div>
+                <div class="faq-answer">
+                    Sim! O script usa múltiplas estratégias de seleção de elementos. Se Google mudar uma coisa,
+                    o script tenta outra. É super resiliente!
+                </div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question">🎬 Quantos vídeos posso gerar de uma vez?</div>
+                <div class="faq-answer">
+                    Quantos quiser! O limite é só os seus créditos do VEO3. O script aguenta batch de 100+ vídeos tranquilamente.
+                </div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question">⏱️ Quanto tempo demora?</div>
+                <div class="faq-answer">
+                    Fase 1 (envio): ~5-7 segundos por prompt<br>
+                    Fase 2 (download): ~3-5 segundos por vídeo<br>
+                    Exemplo: 10 vídeos = ~1 minuto para enviar + tempo de geração do VEO3 + ~30 segundos para baixar
+                </div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question">🐛 Algo não funcionou, e agora?</div>
+                <div class="faq-answer">
+                    1. Verifique se o Tampermonkey está ativado (ícone verde no navegador)<br>
+                    2. Recarregue a página do VEO3 (F5)<br>
+                    3. Abra o console do navegador (F12 → Console) e veja se há erros<br>
+                    4. Se não resolver, abra uma <a href="https://github.com/julio-felipe/veo3-batch-automator/issues" target="_blank">issue no GitHub</a>
+                </div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question">📱 Funciona no celular?</div>
+                <div class="faq-answer">
+                    No celular é mais complicado porque Tampermonkey tem suporte limitado. Recomendamos usar no computador (Windows, Mac ou Linux).
+                </div>
+            </div>
+        </div>
+
+        <div class="hero" style="margin-top: 60px;">
+            <h2>🚀 Pronto para começar?</h2>
+            <p style="font-size: 1.1em; color: #666; margin: 20px 0;">
+                Instale agora e comece a gerar seus vídeos em lote!
+            </p>
+            <a href="https://raw.githubusercontent.com/julio-felipe/veo3-batch-automator/main/veo3-batch-automator.user.js"
+               class="install-button">
+                📥 INSTALAR AGORA
+            </a>
+            <p style="color: #999; margin-top: 30px; font-size: 0.95em;">
+                Mais de <strong>1.000 linhas de código</strong> otimizado para você! 🎉
+            </p>
+        </div>
+
+        <footer>
+            <p>
+                <strong>VEO3 Batch Automator v0.9.1</strong><br>
+                Criado por j. felipe •
+                <a href="https://github.com/julio-felipe/veo3-batch-automator" target="_blank">GitHub</a> •
+                <a href="https://github.com/julio-felipe/veo3-batch-automator/issues" target="_blank">Reportar Bug</a>
+            </p>
+            <p style="margin-top: 20px; opacity: 0.8; font-size: 0.9em;">
+                Built with ❤️ using Claude AI (Anthropic) • MIT License
+            </p>
+        </footer>
+    </div>
+</body>
+</html>
