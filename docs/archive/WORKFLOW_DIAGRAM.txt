@@ -1,0 +1,190 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║                                                                            ║
+║              VEO3 BATCH AUTOMATOR v0.9.0 - WORKFLOW VISUAL                 ║
+║                                                                            ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+
+═══════════════════════════════════════════════════════════════════════════════
+FASE 1: ENVIAR TODOS (Send All)
+═══════════════════════════════════════════════════════════════════════════════
+
+User pastes prompts:
+├─ Prompt 1: "uma bola vermelha"
+├─ Prompt 2: "gato dormindo"
+├─ Prompt 3: "pôr do sol"
+├─ Prompt 4: "árvore crescendo"
+└─ Prompt 5: "água caindo"
+
+                                ⬇️ Clica "▶ Enviar Todos"
+
+        FOR EACH PROMPT (sem esperar downloads):
+        ┌──────────────────────────────────┐
+        │ 1. Inject prompt                 │
+        │ 2. Click send button             │
+        │ 3. Wait for generation (0-100%)  │
+        │ 4. Track video element           │
+        │ 5. Move to next prompt           │
+        └──────────────────────────────────┘
+
+                ⏸️ Pausa? Status = "⏸ Pausado"
+                ⬛ Para? Vídeos gerados ficam rastreados
+
+                                ⬇️ Quando termina
+
+        Status: "🎬 FASE 1 COMPLETA"
+        └─ ✅ 5 vídeos gerados
+        └─ 📥 Botão "Baixar Todos" ativa!
+
+
+═══════════════════════════════════════════════════════════════════════════════
+FASE 2: BAIXAR TODOS (Download All)
+═══════════════════════════════════════════════════════════════════════════════
+
+Quando quiser, User clica "📥 Baixar Todos":
+
+        FOR EACH VIDEO:
+        ┌────────────────────────────────────────────┐
+        │ 1. Scroll para video na tela               │
+        │ 2. Dispatch hover events                   │
+        │ 3. Find download button                    │
+        │ 4. Click download                          │
+        │ 5. Aguarda confirmação                     │
+        │ 6. Próximo video                           │
+        └────────────────────────────────────────────┘
+
+        Video 1: veo3-batch-001.mp4 ✅ Baixado
+        Video 2: veo3-batch-002.mp4 ✅ Baixado
+        Video 3: veo3-batch-003.mp4 ✅ Baixado
+        Video 4: veo3-batch-004.mp4 ✅ Baixado
+        Video 5: veo3-batch-005.mp4 ✅ Baixado
+
+                                ⬇️ Gera manifest
+
+        📄 veo3-batch-MANIFEST.txt ✅ Criado
+
+                                ⬇️ Quando completa
+
+        Status: "🎉 TUDO COMPLETO!"
+        ├─ ✅ 5 baixados | ❌ 0 erros
+        ├─ 📂 Arquivos em: Downloads/
+        ├─ 📄 Manifest baixado!
+        └─ 💡 Veja MANIFEST para organização
+
+
+═══════════════════════════════════════════════════════════════════════════════
+RESULTADO FINAL: DOWNLOADS FOLDER
+═══════════════════════════════════════════════════════════════════════════════
+
+User abre Downloads/ e vê:
+
+        Downloads/
+        ├── veo3-batch-001.mp4         ← Video 1 (numerado)
+        ├── veo3-batch-002.mp4         ← Video 2 (numerado)
+        ├── veo3-batch-003.mp4         ← Video 3 (numerado)
+        ├── veo3-batch-004.mp4         ← Video 4 (numerado)
+        ├── veo3-batch-005.mp4         ← Video 5 (numerado)
+        └── veo3-batch-MANIFEST.txt    ← Instruções
+
+
+═══════════════════════════════════════════════════════════════════════════════
+MANIFEST CONTENT
+═══════════════════════════════════════════════════════════════════════════════
+
+veo3-batch-MANIFEST.txt contém:
+
+        ═══════════════════════════════════════════
+        📦 VEO3 BATCH AUTOMATOR - MANIFEST
+        ═══════════════════════════════════════════
+
+        Generated: 06/02/2026 09:45:30
+        Batch ID: 1738861530123
+        Total Videos: 5
+
+        📂 ORGANIZE YOUR FILES:
+
+        Option 1: Create folder manually
+          1. Open Downloads folder
+          2. Create new folder: "veo3-batch"
+          3. Move ALL veo3-batch-*.mp4 files into it
+
+        Option 2: Use command (Windows PowerShell/CMD):
+          mkdir "%USERPROFILE%\Downloads\veo3-batch"
+          move "%USERPROFILE%\Downloads\veo3-batch-*.mp4" ...
+
+        Option 3: Use command (Mac/Linux)
+          mkdir -p ~/Downloads/veo3-batch
+          mv ~/Downloads/veo3-batch-*.mp4 ~/Downloads/veo3-batch/
+
+        📋 FILES DOWNLOADED:
+
+          001. veo3-batch-001.mp4
+               Prompt: uma bola vermelha
+
+          002. veo3-batch-002.mp4
+               Prompt: gato dormindo ao sol
+
+          003. veo3-batch-003.mp4
+               Prompt: pôr do sol na praia
+
+          ... (mais 2 files)
+
+
+═══════════════════════════════════════════════════════════════════════════════
+USER FINALIZA
+═══════════════════════════════════════════════════════════════════════════════
+
+User escolhe uma opção:
+
+Option 1: Manual (Qualquer SO)
+        ├─ Cria pasta: Downloads/veo3-batch/
+        ├─ Move: veo3-batch-*.mp4 para dentro
+        └─ Resultado: Downloads/veo3-batch/{001,002,003,004,005}.mp4
+
+Option 2: Windows Command
+        ├─ Copy-paste do manifest
+        ├─ Executa no PowerShell/CMD
+        └─ Resultado: Instantâneo, automático!
+
+Option 3: Mac/Linux Command
+        ├─ Copy-paste do manifest
+        ├─ Executa no Terminal
+        └─ Resultado: Instantâneo, automático!
+
+
+═══════════════════════════════════════════════════════════════════════════════
+VANTAGENS DO NOVO SISTEMA
+═══════════════════════════════════════════════════════════════════════════════
+
+✅ NUMERAÇÃO CORRETA
+   └─ 001.mp4, 002.mp4, 003.mp4 (sempre sequencial)
+   └─ Ordem alfabética = ordem de geração
+
+✅ FÁCIL DE ORGANIZAR
+   └─ 3 opções prontas (manual, Windows, Mac/Linux)
+   └─ Manifest com todas as instruções
+   └─ Copy-paste dos comandos
+
+✅ SEM CONFLITOS
+   └─ Cada batch tem ID único
+   └─ Timestamp evita sobrescrita
+   └─ Manifest documenta tudo
+
+✅ PROFISSIONAL
+   └─ User-friendly workflow
+   └─ Nenhuma surpresa
+   └─ Tudo documentado
+
+
+═══════════════════════════════════════════════════════════════════════════════
+
+Performance Breakdown:
+  Phase 1: 5 videos = ~10 segundos (2s por video)
+  Phase 2: 5 downloads = ~30 segundos (6s por video)
+  Total: ~40 segundos para 5 vídeos
+
+Comparação:
+  Old (v0.8): Send + Download sequencial = 100+ segundos
+  New (v0.9): Send all, then download = 40 segundos = 2.5x MAIS RÁPIDO! 🚀
+
+═══════════════════════════════════════════════════════════════════════════════
