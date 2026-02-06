@@ -31,13 +31,13 @@ Automate batch video generation in Google Veo 3.1 with **2-phase workflow**: Sen
 - Safari: [Tampermonkey Safari](https://apps.apple.com/app/tampermonkey/id1482490089)
 - Opera/Edge: Search "Tampermonkey" na store
 
-**2. Install Script** (escolha uma opção)
+**2. Install Script**
 
-**Opção A (Gist):** [Clique aqui para instalar](LINK_GIST_AQUI)
+**[📥 CLIQUE AQUI PARA INSTALAR](https://raw.githubusercontent.com/julio-felipe/veo3-batch-automator/main/veo3-batch-automator.user.js)**
 
-**Opção B (GitHub Raw):** [Clique aqui para instalar](LINK_RAW_GITHUB)
+O Tampermonkey vai abrir automaticamente e perguntar se quer instalar. Clique em "Instalar".
 
-**Opção C (Manual):**
+**Ou instalação manual:**
 1. Copie o conteúdo de `veo3-batch-automator.user.js`
 2. Tampermonkey Dashboard → "Criar novo script"
 3. Cole o código
