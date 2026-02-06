@@ -1,29 +1,25 @@
+# AIOS Framework files (keep local, don't push)
+.aios-core/
+.aios/
+.agent/
+.antigravity/
+.claude/
 
-
-# Environment & Secrets (AIOS)
+# Environment files
 .env
-.env.local
-.env.*.local
-*.key
-*.pem
+.env.example
 
-# Dependencies (AIOS)
+# Node modules (if any)
 node_modules/
-node_modules
+package-lock.json
 
-# Build & Logs (AIOS)
-dist/
-build/
-*.log
-logs/
+# MCP config
+.mcp.json
 
-# IDE & OS (AIOS)
+# IDE files
+.vscode/
+.idea/
+
+# OS files
 .DS_Store
 Thumbs.db
-.idea/
-*.swp
-
-# AIOS Local (AIOS)
-.aios-core/local/
-.claude/settings.local.json
-.aios/install-log.txt
