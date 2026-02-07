@@ -1268,25 +1268,25 @@
         if (state.lastDownloadComplete) {
           updateStatus('✅ Download concluído');
           state.lastDownloadComplete = false;
-          resolve();
+          resolve(true);
           return;
         }
 
         if (document.querySelectorAll('a[href^="blob:"]').length > initialBlobCount) {
           updateStatus('✅ Download concluído');
-          resolve();
+          resolve(true);
           return;
         }
 
         if (document.querySelectorAll('a[download]').length > initialDlCount) {
           updateStatus('✅ Download concluído');
-          resolve();
+          resolve(true);
           return;
         }
 
         if (elapsed >= maxWait) {
-          updateStatus('✅ Download concluído (timeout)');
-          resolve();
+          updateStatus('⚠️ Download não confirmado (timeout)');
+          resolve(false);
           return;
         }
 
@@ -1518,20 +1518,26 @@
 
           await clickDownloadButton();
           await sleep(1000);
-          await waitForDownloadCompletion();
+          const downloadConfirmed = await waitForDownloadCompletion();
 
-          state.downloadedCount++;
-          // Update result status
           const result = state.results.find(r => r.index === entry.index);
-          if (result) {
-            result.status = 'ok';
-            result.filename = `${CONFIG.DOWNLOAD_FOLDER}-${paddedNum}.mp4`;
+          if (downloadConfirmed) {
+            state.downloadedCount++;
+            if (result) {
+              result.status = 'ok';
+              result.filename = `${CONFIG.DOWNLOAD_FOLDER}-${paddedNum}.mp4`;
+            }
+            updateStatus(`[${paddedNum}] ✅ Baixado!`);
+          } else {
+            if (result) {
+              result.status = 'download_unconfirmed';
+              result.error = 'Timeout - verifique manualmente';
+            }
+            updateStatus(`[${paddedNum}] ⚠️ Não confirmado — verifique na pasta Downloads`);
           }
 
           document.getElementById('veo3-downloaded').textContent =
             `Gerados: ${total} | Baixados: ${state.downloadedCount}/${total}`;
-
-          updateStatus(`[${paddedNum}] ✅ Baixado!`);
 
           if (i < state.completedVideos.length - 1) {
             await sleep(1500); // Small delay between downloads
@@ -1552,12 +1558,13 @@
       const dlDuration = ((Date.now() - downloadStartTime) / 1000).toFixed(1);
       const totalDuration = ((Date.now() - state.startTime) / 1000).toFixed(1);
       const okCount = state.results.filter(r => r.status === 'ok').length;
+      const unconfirmedCount = state.results.filter(r => r.status === 'download_unconfirmed').length;
       const errCount = state.results.filter(r => r.status === 'error' || r.status === 'download_error').length;
 
       updateStatus('────────────────────');
       updateStatus(`🎉 TUDO COMPLETO!`);
       updateStatus(`📥 Downloads: ${dlDuration}s | Total: ${totalDuration}s`);
-      updateStatus(`✅ ${okCount} baixados | ❌ ${errCount} erros`);
+      updateStatus(`✅ ${okCount} baixados${unconfirmedCount > 0 ? ` | ⚠️ ${unconfirmedCount} não confirmados` : ''} | ❌ ${errCount} erros`);
       updateStatus('');
       updateStatus('📂 Organizando arquivos...');
 
