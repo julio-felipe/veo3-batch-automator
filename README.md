@@ -2,7 +2,7 @@
 
 > Automate batch video generation in Google Veo 3.1 with human-like behavior and 2-phase workflow
 
-[![Version](https://img.shields.io/badge/version-0.9.1-blue.svg)](https://github.com/julio-felipe/veo3-batch-automator)
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/julio-felipe/veo3-batch-automator)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Tampermonkey](https://img.shields.io/badge/Tampermonkey-required-red.svg)](https://www.tampermonkey.net/)
 [![Browser](https://img.shields.io/badge/browser-Chrome%20%7C%20Firefox%20%7C%20Safari%20%7C%20Edge-orange.svg)](#-quick-installation-2-minutes)
@@ -134,16 +134,19 @@ Edit these constants in the script to customize behavior:
 
 ```javascript
 const CONFIG = {
-  POLL_INTERVAL: 500,           // Check progress every 500ms
-  PROGRESS_TIMEOUT: 180000,     // 3 minutes max wait for video generation
-  DOWNLOAD_TIMEOUT: 30000,      // 30 seconds to detect download
-  INTER_PROMPT_DELAY: 2000      // 2 seconds between prompts
+  POLL_INTERVAL: 500,              // Check progress every 500ms
+  PROGRESS_TIMEOUT: 480000,        // 8 minutes max wait for video generation
+  DOWNLOAD_TIMEOUT: 30000,         // 30 seconds to detect download
+  INTER_PROMPT_DELAY_MIN: 3000,    // Min delay between prompts (3s)
+  INTER_PROMPT_DELAY_MAX: 7000,    // Max delay between prompts (7s)
+  QUEUE_BATCH_SIZE: 5,             // VEO3 max queue size
+  QUEUE_COOLDOWN: 15000            // Cooldown when queue is full (15s)
 };
 ```
 
 ### Recommended Settings:
-- **Slower VEO3 response?** Increase `PROGRESS_TIMEOUT` to 300000 (5 min)
-- **Faster generation?** Reduce `INTER_PROMPT_DELAY` to 1000 (1 sec)
+- **Slower VEO3 response?** Increase `PROGRESS_TIMEOUT` to 600000 (10 min)
+- **Queue limit issues?** Adjust `QUEUE_BATCH_SIZE` and `QUEUE_COOLDOWN`
 - **Downloads not detected?** Increase `DOWNLOAD_TIMEOUT` to 60000 (1 min)
 
 ---
@@ -169,6 +172,12 @@ const CONFIG = {
 - Check browser download folder permissions
 - Verify downloads are not blocked
 - Try adjusting `DOWNLOAD_TIMEOUT` in config
+- v1.0.0: Downloads now use direct URL capture (much more reliable)
+
+### Queue limit (max 5 generations)
+- VEO3 allows max 5 generations in queue at once
+- v1.0.0: Script auto-detects and waits for queue availability
+- Adjust `QUEUE_COOLDOWN` if needed
 
 ### Batch gets stuck
 - Check the status log in the panel
@@ -286,6 +295,14 @@ Created with ❤️ for content creators and batch processing automation.
 ---
 
 ## 📈 Changelog
+
+### v1.0.0 (2026-02-07) - **STABLE RELEASE**
+- 📥 **DOWNLOAD FIX:** Direct URL capture during generation — downloads work for ALL videos (not just visible ones)
+- 📥 **BLOB PRESERVATION:** Pre-fetches blob URLs immediately to survive React re-renders
+- 🚦 **QUEUE AWARENESS:** Auto-detects VEO3's 5-generation queue limit and waits for availability
+- 🔍 **SMART SCROLL:** Finds videos off-screen with intelligent scrollable container detection
+- ✅ **DOWNLOAD VALIDATION:** No more false positives — unconfirmed downloads reported separately
+- ⚠️ **HONEST REPORTING:** Summary shows confirmed, unconfirmed, and failed downloads
 
 ### v0.9.0 (2026-02-06) - **PUBLIC RELEASE**
 - ✨ **MAJOR:** Split into 2-phase workflow (Send All → Download All)

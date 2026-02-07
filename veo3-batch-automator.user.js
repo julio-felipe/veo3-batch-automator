@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Veo3 Prompt Batch Automator
 // @namespace    https://synkra.io/
-// @version      0.9.1
+// @version      1.0.0
 // @description  Automate batch video generation in Google Veo 3.1 — Send All then Download All
 // @author       j. felipe
 // @match        https://labs.google/fx/pt/tools/flow/project/*
@@ -90,7 +90,9 @@
     TYPING_DELAY_JITTER: 15,      // ±15ms jitter per character
     MICRO_DELAY_MIN: 200,         // Min micro-delay between actions (ms)
     MICRO_DELAY_MAX: 600,         // Max micro-delay between actions (ms)
-    DOWNLOAD_FOLDER: 'veo3-batch' // Subfolder in Downloads
+    DOWNLOAD_FOLDER: 'veo3-batch', // Subfolder in Downloads
+    QUEUE_BATCH_SIZE: 5,           // VEO3 max queue size
+    QUEUE_COOLDOWN: 15000          // Cooldown after full batch (15s)
   };
 
   // ============================================================================
@@ -463,6 +465,96 @@
   async function microDelay() {
     const delay = CONFIG.MICRO_DELAY_MIN + Math.random() * (CONFIG.MICRO_DELAY_MAX - CONFIG.MICRO_DELAY_MIN);
     await sleep(Math.round(delay));
+  }
+
+  // Check if VEO3 queue is full (max 5 generations)
+  function detectQueueFull() {
+    const candidates = document.querySelectorAll(
+      '[role="alert"], [role="status"], [role="tooltip"], ' +
+      '[class*="snack"], [class*="toast"], [class*="notif"], ' +
+      '[class*="banner"], [class*="message"], [class*="popup"]'
+    );
+    for (const el of candidates) {
+      const text = el.textContent || '';
+      if (text.includes('máximo') && text.includes('geraç')) return true;
+      if (text.includes('maximum') && text.includes('generation')) return true;
+    }
+    return false;
+  }
+
+  // Wait for queue slot if VEO3 reports queue full
+  async function waitForQueueSlot() {
+    if (!detectQueueFull()) return;
+    updateStatus(`⏳ Fila cheia (${CONFIG.QUEUE_BATCH_SIZE}/${CONFIG.QUEUE_BATCH_SIZE}) — aguardando vaga...`);
+    let waited = 0;
+    const maxWait = CONFIG.QUEUE_COOLDOWN * 20; // 5 min max based on cooldown
+    while (detectQueueFull() && waited < maxWait && state.isRunning) {
+      await sleep(CONFIG.QUEUE_COOLDOWN);
+      waited += CONFIG.QUEUE_COOLDOWN;
+    }
+    if (waited > 0) {
+      updateStatus('✅ Vaga na fila disponível!');
+      await sleep(2000);
+    }
+  }
+
+  // Find the actual scrollable container (SPA apps often scroll inner divs, not body)
+  function findScrollableContainer() {
+    const candidates = document.querySelectorAll(
+      'main, [role="main"], [class*="scroll"], [class*="content"], [class*="feed"], [class*="container"]'
+    );
+    for (const el of candidates) {
+      const style = getComputedStyle(el);
+      if ((style.overflowY === 'auto' || style.overflowY === 'scroll') && el.scrollHeight > el.clientHeight + 100) {
+        return el;
+      }
+    }
+    return null;
+  }
+
+  // Scroll page to find a video not in visible DOM (virtual scrolling)
+  async function scrollToLoadVideo(targetIndex) {
+    updateStatus(`🔍 Procurando vídeo ${targetIndex}... (scroll)`);
+
+    // Try both: inner scrollable container AND window scroll
+    const innerScrollable = findScrollableContainer();
+    const targets = innerScrollable ? [innerScrollable, document.documentElement] : [document.documentElement];
+
+    for (const scrollable of targets) {
+      // Reset to top
+      scrollable.scrollTop = 0;
+      window.scrollTo({ top: 0, behavior: 'instant' });
+      await sleep(800);
+
+      // Scroll down incrementally
+      const scrollStep = 300;
+      const maxHeight = Math.max(scrollable.scrollHeight, document.documentElement.scrollHeight);
+
+      for (let pos = 0; pos <= maxHeight; pos += scrollStep) {
+        scrollable.scrollTop = pos;
+        window.scrollTo({ top: pos, behavior: 'instant' });
+        await sleep(400);
+
+        // Check by data attribute
+        const byAttr = document.querySelector(`video[data-veo3-batch-index="${targetIndex}"]`);
+        if (byAttr && byAttr.isConnected) {
+          byAttr.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          await sleep(500);
+          return byAttr;
+        }
+
+        // Check by count
+        const allVideos = document.querySelectorAll('video');
+        if (allVideos.length >= targetIndex) {
+          const found = allVideos[targetIndex - 1];
+          found.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          await sleep(500);
+          return found;
+        }
+      }
+    }
+
+    return null;
   }
 
   function findElement(selectorList, purpose = 'unknown') {
@@ -950,8 +1042,8 @@
         console.error('❌ Fetch failed:', err);
         // Fallback: open in new tab (user downloads manually)
         window.open(url, '_blank');
-        state.lastDownloadComplete = true;
-        updateStatus(`⚠️ Aberto em nova aba: ${filename}`);
+        state.lastDownloadComplete = false;
+        updateStatus(`⚠️ Aberto em nova aba (verifique): ${filename}`);
       }
 
       return;
@@ -1370,6 +1462,9 @@
         updateStatus(`[${paddedNum}] Preparando...`);
 
         try {
+          // Check queue availability before sending
+          await waitForQueueSlot();
+
           await injectPrompt(prompt);
           await microDelay(); // Natural pause after typing
 
@@ -1381,14 +1476,30 @@
 
           // Track the generated video for Phase 2 download
           const videoEl = state.lastVideoElement;
+          let videoUrl = videoEl ? (videoEl.src || videoEl.currentSrc || '') : '';
           if (videoEl) {
             videoEl.setAttribute('data-veo3-batch-index', String(i + 1));
+          }
+          // Pre-fetch blob URLs to preserve video data before React re-renders
+          if (videoUrl && videoUrl.startsWith('blob:')) {
+            try {
+              const response = await fetch(videoUrl);
+              const blob = await response.blob();
+              videoUrl = URL.createObjectURL(blob);
+              console.log(`📎 Blob preservado: vídeo ${i + 1} (${(blob.size / 1024 / 1024).toFixed(1)}MB)`);
+            } catch (e) {
+              console.warn(`⚠️ Blob não preservado vídeo ${i + 1}: ${e.message}`);
+            }
           }
           state.completedVideos.push({
             index: i + 1,
             prompt: prompt.substring(0, 60),
-            videoElement: videoEl
+            videoElement: videoEl,
+            videoUrl: videoUrl
           });
+          if (videoUrl) {
+            console.log(`📎 URL capturada para vídeo ${i + 1}: ${videoUrl.substring(0, 80)}`);
+          }
           state.results.push({ index: i + 1, prompt: prompt.substring(0, 60), status: 'generated' });
 
           document.getElementById('veo3-downloaded').textContent =
@@ -1492,33 +1603,63 @@
         updateStatus(`[${paddedNum}] Baixando vídeo...`);
 
         try {
-          // Try to use the tracked video element
-          let targetVideo = entry.videoElement;
+          const filename = `veo3-batch-${paddedNum}.mp4`;
+          let directDownloaded = false;
 
-          // Fallback: find by data attribute
-          if (!targetVideo || !targetVideo.isConnected) {
-            targetVideo = document.querySelector(`video[data-veo3-batch-index="${entry.index}"]`);
-          }
-
-          // Fallback: find by position (nth video)
-          if (!targetVideo) {
-            const allVideos = document.querySelectorAll('video');
-            if (allVideos.length >= entry.index) {
-              targetVideo = allVideos[entry.index - 1];
+          // =====================================================================
+          // STRATEGY A: Direct URL download (most reliable — no DOM needed)
+          // =====================================================================
+          if (entry.videoUrl && entry.videoUrl.length > 0) {
+            updateStatus(`[${paddedNum}] ⬇️ Download direto via URL...`);
+            try {
+              state.lastDownloadComplete = false;
+              await triggerNativeDownload(entry.videoUrl, filename);
+              if (state.lastDownloadComplete) {
+                directDownloaded = true;
+                console.log(`📥 [DL] ✅ URL download succeeded for ${paddedNum}`);
+              }
+            } catch (err) {
+              console.warn(`📥 [DL] URL download failed for ${paddedNum}: ${err.message}`);
             }
           }
 
-          if (!targetVideo) {
-            throw new Error('Vídeo não encontrado na página');
+          // =====================================================================
+          // STRATEGY B: Element-based download (fallback if URL unavailable/expired)
+          // =====================================================================
+          if (!directDownloaded) {
+            let targetVideo = entry.videoElement;
+
+            // Fallback: find by data attribute
+            if (!targetVideo || !targetVideo.isConnected) {
+              targetVideo = document.querySelector(`video[data-veo3-batch-index="${entry.index}"]`);
+            }
+
+            // Fallback: find by position (nth video)
+            if (!targetVideo) {
+              const allVideos = document.querySelectorAll('video');
+              if (allVideos.length >= entry.index) {
+                targetVideo = allVideos[entry.index - 1];
+              }
+            }
+
+            // Fallback: scroll page to load video into DOM
+            if (!targetVideo) {
+              targetVideo = await scrollToLoadVideo(entry.index);
+            }
+
+            if (!targetVideo) {
+              throw new Error('Vídeo não encontrado na página (mesmo após scroll)');
+            }
+
+            // Set as current target for clickDownloadButton
+            state.lastVideoElement = targetVideo;
+            state.videoCountBeforeGen = document.querySelectorAll('video').length;
+
+            await clickDownloadButton();
           }
 
-          // Set as current target for clickDownloadButton
-          state.lastVideoElement = targetVideo;
-          state.videoCountBeforeGen = document.querySelectorAll('video').length;
-
-          await clickDownloadButton();
           await sleep(1000);
-          const downloadConfirmed = await waitForDownloadCompletion();
+          const downloadConfirmed = directDownloaded || (await waitForDownloadCompletion());
 
           const result = state.results.find(r => r.index === entry.index);
           if (downloadConfirmed) {
@@ -1616,7 +1757,7 @@
   // DEBUG & DIAGNOSTICS
   // ============================================================================
   function performDiagnostics() {
-    console.log('🔍 VEO3 Batch Automator v0.9.1 — Diagnostics');
+    console.log('🔍 VEO3 Batch Automator v1.0.0 — Diagnostics');
     console.log('='.repeat(50));
 
     const inputEl = findElement(SELECTORS.inputField, 'input');
@@ -1644,7 +1785,7 @@
   // INITIALIZATION
   // ============================================================================
   function init() {
-    console.log('🎬 VEO3 Batch Automator v0.9.1');
+    console.log('🎬 VEO3 Batch Automator v1.0.0');
     console.log(`📁 Downloads → ${CONFIG.DOWNLOAD_FOLDER}/001.mp4, 002.mp4, ...`);
     injectStyles();
     createFloatingBubble();

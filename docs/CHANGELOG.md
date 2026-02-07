@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.0] - 2026-02-07 — STABLE RELEASE
+
+### Added
+- 📥 Direct URL capture during video generation (Phase 1) for reliable Phase 2 downloads
+- 📥 Blob URL pre-fetching — preserves video data before React re-renders destroy references
+- 🚦 Queue awareness — auto-detects VEO3's "máximo 5 gerações" notification and waits
+- 🔍 Smart scrollable container detection — finds the actual scrolling element in VEO3 SPA
+- 🔍 Dual scroll strategy — tries both inner container and window.scrollTo for maximum compatibility
+- ✅ Download confirmation returns true/false — no more false positives on timeout
+- ⚠️ New `download_unconfirmed` status for downloads that timed out without confirmation
+- 📊 Summary now shows confirmed, unconfirmed, and failed counts separately
+
+### Fixed
+- Fixed: Downloads failing for videos not visible on screen (17/20 failures → 0)
+- Fixed: `waitForDownloadCompletion` timeout falsely reporting success
+- Fixed: `window.open` fallback incorrectly marking downloads as complete
+- Fixed: Blob URLs expiring between Phase 1 and Phase 2
+
+### Changed
+- `CONFIG.QUEUE_BATCH_SIZE` (5) — VEO3 max queue size
+- `CONFIG.QUEUE_COOLDOWN` (15s) — wait interval when queue is full
+- Strategy A (URL direct) now runs BEFORE element-based download (Strategy B)
+- Version bumped to 1.0.0 — production stable
+
+---
+
 ## [0.1.0] - 2026-02-05
 
 ### Added
