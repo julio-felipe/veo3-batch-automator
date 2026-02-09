@@ -1456,6 +1456,73 @@
     }
   }
 
+  // Find download button nearest to a given video element (does NOT touch batch state)
+  function findDownloadButtonNear(videoEl) {
+    const rect = videoEl.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+
+    // Search inside video's container first
+    const container = videoEl.closest('div[class*="video"], div[class*="player"], div[class*="preview"], [role="main"]') || videoEl.parentElement;
+    const iconsInContainer = container?.querySelectorAll('i.google-symbols') || [];
+    for (const icon of iconsInContainer) {
+      const iconText = (icon.textContent || '').trim().toLowerCase();
+      if (iconText === 'download' || iconText === 'file_download' || iconText === 'save_alt') {
+        const btn = icon.closest('button') || icon.closest('a') || icon.closest('[role="button"]');
+        if (btn && btn.offsetParent !== null) return btn;
+      }
+    }
+
+    // Global search — pick closest to video center
+    const allIcons = document.querySelectorAll('i.google-symbols');
+    let closestBtn = null;
+    let closestDist = Infinity;
+    for (const icon of allIcons) {
+      const iconText = (icon.textContent || '').trim().toLowerCase();
+      if (iconText === 'download' || iconText === 'file_download' || iconText === 'save_alt') {
+        const btn = icon.closest('button') || icon.closest('a') || icon.closest('[role="button"]');
+        if (btn && btn.offsetParent !== null) {
+          const bRect = btn.getBoundingClientRect();
+          const dist = Math.hypot(bRect.left - cx, bRect.top - cy);
+          if (dist < closestDist) {
+            closestDist = dist;
+            closestBtn = btn;
+          }
+        }
+      }
+    }
+    return closestBtn;
+  }
+
+  // Hover over a video element to reveal VEO3's native controls
+  async function hoverOverVideo(videoEl) {
+    const rect = videoEl.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+
+    // Mouse events on the video itself
+    videoEl.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, clientX: cx, clientY: cy }));
+    videoEl.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: cx, clientY: cy }));
+    videoEl.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: cx, clientY: cy }));
+    await sleep(400);
+
+    // Hover on parent containers (VEO3 may listen on wrapper)
+    let parent = videoEl.parentElement;
+    for (let i = 0; i < 3 && parent; i++) {
+      parent.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, clientX: cx, clientY: cy }));
+      parent.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: cx, clientY: cy }));
+      parent.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: cx, clientY: cy }));
+      parent = parent.parentElement;
+    }
+    await sleep(400);
+
+    // Pointer events (some frameworks listen to pointer, not mouse)
+    videoEl.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true, clientX: cx, clientY: cy }));
+    videoEl.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: cx, clientY: cy }));
+    videoEl.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, clientX: cx, clientY: cy }));
+    await sleep(400);
+  }
+
   async function downloadPageVideos() {
     const dlPageBtn = document.getElementById('veo3-dl-page-btn');
     const videos = document.querySelectorAll('video');
@@ -1475,29 +1542,26 @@
     }
 
     let downloaded = 0;
-    let skipped = 0;
+    let failed = 0;
 
     for (let i = 0; i < videos.length; i++) {
       const video = videos[i];
       const num = String(i + 1).padStart(3, '0');
       const filename = `veo3-page-${num}.mp4`;
       const url = video.currentSrc || video.src || '';
-
-      if (!url) {
-        updateStatus(`  [${num}] ⏭️ Sem src — pulando`);
-        skipped++;
-        continue;
-      }
+      let success = false;
 
       try {
-        if (url.startsWith('http')) {
-          // HTTP URL — use existing triggerNativeDownload
-          updateStatus(`  [${num}] ⬇️ Download HTTP...`);
+        // ── Strategy 1: Direct URL download (HTTP) ──
+        if (!success && url.startsWith('http')) {
+          updateStatus(`  [${num}] ⬇️ Download direto (HTTP)...`);
           state.lastDownloadComplete = false;
           await triggerNativeDownload(url, filename);
-          downloaded++;
-        } else if (url.startsWith('blob:')) {
-          // Blob URL — fetch blob then download
+          if (state.lastDownloadComplete) success = true;
+        }
+
+        // ── Strategy 2: Blob URL download ──
+        if (!success && url.startsWith('blob:')) {
           updateStatus(`  [${num}] ⬇️ Download blob...`);
           try {
             const response = await fetch(url);
@@ -1510,33 +1574,115 @@
             a.style.display = 'none';
             document.body.appendChild(a);
             a.click();
-
-            setTimeout(() => {
-              document.body.removeChild(a);
-              URL.revokeObjectURL(blobUrl);
-            }, 1000);
+            setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(blobUrl); }, 1000);
 
             updateStatus(`  [${num}] ✅ ${filename}`);
-            downloaded++;
+            success = true;
           } catch (err) {
-            updateStatus(`  [${num}] ❌ Blob falhou: ${err.message}`);
+            console.warn(`  [${num}] Blob fetch failed: ${err.message}`);
           }
-        } else {
-          updateStatus(`  [${num}] ⏭️ URL não suportada`);
-          skipped++;
         }
 
-        // Small delay between downloads
+        // ── Strategy 3: Hover + native VEO3 download button ──
+        if (!success) {
+          updateStatus(`  [${num}] 🖱️ Hover + botão nativo...`);
+          video.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          await sleep(500);
+
+          // Try hovering and finding button up to 4 attempts
+          let downloadBtn = null;
+          for (let attempt = 0; attempt < 4; attempt++) {
+            await hoverOverVideo(video);
+            downloadBtn = findDownloadButtonNear(video);
+            if (downloadBtn) break;
+            await sleep(800);
+          }
+
+          if (downloadBtn) {
+            // Install interceptor to catch window.open with video URL
+            const restoreWindowOpen = installWindowOpenInterceptor(filename);
+            state.lastDownloadComplete = false;
+
+            // Human-like click
+            downloadBtn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+            await sleep(50 + Math.random() * 80);
+            downloadBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+            await sleep(40 + Math.random() * 60);
+            downloadBtn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true }));
+            await sleep(20 + Math.random() * 40);
+            downloadBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+            await sleep(10 + Math.random() * 30);
+            downloadBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+            await sleep(1500);
+
+            // Check quality menu
+            const qualityTexts = ['Tamanho original', 'Original size', 'Original quality', '720p', '1080p', 'MP4'];
+            let qualityOption = null;
+            for (const text of qualityTexts) {
+              qualityOption = findQualityOption(text);
+              if (qualityOption) break;
+            }
+
+            if (qualityOption) {
+              const anchor = qualityOption.tagName === 'A' ? qualityOption : qualityOption.closest('a');
+              const href = anchor?.href;
+              if (href && !href.startsWith('javascript:') && !href.startsWith('#')) {
+                restoreWindowOpen();
+                await triggerNativeDownload(href, filename);
+                success = state.lastDownloadComplete;
+              } else {
+                qualityOption.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                await sleep(2000);
+                restoreWindowOpen();
+                success = state.lastDownloadComplete;
+              }
+            } else {
+              // No quality menu — direct click may have triggered download
+              await sleep(1500);
+              restoreWindowOpen();
+              success = state.lastDownloadComplete;
+
+              // Check if video src appeared after clicking
+              if (!success) {
+                const freshSrc = video.src || video.currentSrc || '';
+                if (freshSrc && freshSrc.startsWith('http')) {
+                  await triggerNativeDownload(freshSrc, filename);
+                  success = state.lastDownloadComplete;
+                }
+              }
+            }
+
+            if (success) {
+              updateStatus(`  [${num}] ✅ ${filename}`);
+            } else {
+              updateStatus(`  [${num}] ⚠️ Download não confirmado`);
+            }
+          } else {
+            updateStatus(`  [${num}] ❌ Botão de download não encontrado`);
+          }
+        }
+
+        if (success) {
+          downloaded++;
+        } else {
+          failed++;
+        }
+
+        // Delay between downloads
         if (i < videos.length - 1) {
-          await sleep(800);
+          await sleep(1200);
         }
       } catch (err) {
         updateStatus(`  [${num}] ❌ Erro: ${err.message}`);
+        failed++;
       }
     }
 
     updateStatus('────────────────────');
-    updateStatus(`📥 Resultado: ${downloaded} baixados | ${skipped} sem src`);
+    updateStatus(`📥 Resultado: ${downloaded} baixados | ${failed} falharam`);
+    if (downloaded > 0) {
+      updateStatus(`📂 Arquivos: veo3-page-001.mp4, etc`);
+    }
 
     // Re-enable button
     if (dlPageBtn) {
