@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Veo3 Prompt Batch Automator
 // @namespace    https://synkra.io/
-// @version      1.0.0
+// @version      1.1.0
 // @description  Automate batch video generation in Google Veo 3.1 — Send All then Download All
 // @author       j. felipe
 // @match        https://labs.google/fx/pt/tools/flow/project/*
@@ -271,6 +271,18 @@
             transition: background 0.2s; opacity: 0.5;
           " disabled>&#128229; Baixar Todos</button>
         </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
+          <button id="veo3-dl-page-btn" style="
+            padding: 10px; background: #00BCD4; color: white; border: none;
+            border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px;
+            transition: background 0.2s;
+          ">&#128249; Baixar vídeos da página</button>
+          <button id="veo3-scan-page-btn" style="
+            padding: 10px; background: #78909C; color: white; border: none;
+            border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px;
+            transition: background 0.2s;
+          ">&#128269; Ler página</button>
+        </div>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 15px;">
           <button id="veo3-pause-btn" style="
             padding: 10px; background: #ff9800; color: white; border: none;
@@ -337,10 +349,17 @@
     const pauseBtn = document.getElementById('veo3-pause-btn');
     const stopBtn = document.getElementById('veo3-stop-btn');
 
+    const dlPageBtn = document.getElementById('veo3-dl-page-btn');
+    const scanPageBtn = document.getElementById('veo3-scan-page-btn');
+
     startBtn.addEventListener('mouseenter', () => { startBtn.style.background = '#45a049'; });
     startBtn.addEventListener('mouseleave', () => { startBtn.style.background = '#4CAF50'; });
     downloadAllBtn.addEventListener('mouseenter', () => { if (!downloadAllBtn.disabled) downloadAllBtn.style.background = '#1976D2'; });
     downloadAllBtn.addEventListener('mouseleave', () => { if (!downloadAllBtn.disabled) downloadAllBtn.style.background = '#2196F3'; });
+    dlPageBtn.addEventListener('mouseenter', () => { if (!dlPageBtn.disabled) dlPageBtn.style.background = '#0097A7'; });
+    dlPageBtn.addEventListener('mouseleave', () => { if (!dlPageBtn.disabled) dlPageBtn.style.background = '#00BCD4'; });
+    scanPageBtn.addEventListener('mouseenter', () => { scanPageBtn.style.background = '#607D8B'; });
+    scanPageBtn.addEventListener('mouseleave', () => { scanPageBtn.style.background = '#78909C'; });
     pauseBtn.addEventListener('mouseenter', () => { pauseBtn.style.background = '#e68900'; });
     pauseBtn.addEventListener('mouseleave', () => { pauseBtn.style.background = '#ff9800'; });
     stopBtn.addEventListener('mouseenter', () => { stopBtn.style.background = '#d32f2f'; });
@@ -350,6 +369,8 @@
     document.getElementById('veo3-minimize-btn').addEventListener('click', () => togglePanel(false));
     startBtn.addEventListener('click', startBatchProcess);
     downloadAllBtn.addEventListener('click', downloadAllVideos);
+    dlPageBtn.addEventListener('click', downloadPageVideos);
+    scanPageBtn.addEventListener('click', scanPageVideos);
     pauseBtn.addEventListener('click', togglePause);
     stopBtn.addEventListener('click', stopBatch);
 
@@ -1389,6 +1410,142 @@
   }
 
   // ============================================================================
+  // PAGE VIDEO SCAN & DOWNLOAD (independent of batch flow)
+  // ============================================================================
+
+  function scanPageVideos() {
+    const videos = document.querySelectorAll('video');
+    updateStatus('────────────────────');
+    updateStatus(`🔍 Escaneando página...`);
+
+    if (videos.length === 0) {
+      updateStatus('⚠️ Nenhum <video> encontrado na página.');
+      return;
+    }
+
+    updateStatus(`📹 ${videos.length} vídeo(s) encontrado(s):`);
+
+    videos.forEach((video, idx) => {
+      const num = String(idx + 1).padStart(2, '0');
+      const src = video.src || '';
+      const currentSrc = video.currentSrc || '';
+      const url = currentSrc || src;
+      const w = video.videoWidth || video.width || 0;
+      const h = video.videoHeight || video.height || 0;
+      const dur = isNaN(video.duration) ? '?' : video.duration.toFixed(1);
+
+      let srcType = 'sem src';
+      if (url.startsWith('blob:')) srcType = 'blob';
+      else if (url.startsWith('http')) srcType = 'HTTP';
+
+      const dims = (w && h) ? `${w}x${h}` : '?';
+      updateStatus(`  [${num}] ${srcType} | ${dims} | ${dur}s`);
+      if (url) {
+        console.log(`  [${num}] URL: ${url.substring(0, 120)}`);
+      }
+    });
+
+    updateStatus('────────────────────');
+
+    // Update bubble badge with video count
+    const badge = document.getElementById('veo3-badge');
+    if (badge && !state.isRunning) {
+      badge.style.display = 'flex';
+      badge.textContent = `📹${videos.length}`;
+      badge.style.background = '#00BCD4';
+    }
+  }
+
+  async function downloadPageVideos() {
+    const dlPageBtn = document.getElementById('veo3-dl-page-btn');
+    const videos = document.querySelectorAll('video');
+
+    updateStatus('────────────────────');
+    updateStatus(`📥 Baixando vídeos da página...`);
+
+    if (videos.length === 0) {
+      updateStatus('⚠️ Nenhum <video> encontrado na página.');
+      return;
+    }
+
+    // Disable button during download
+    if (dlPageBtn) {
+      dlPageBtn.disabled = true;
+      dlPageBtn.style.opacity = '0.5';
+    }
+
+    let downloaded = 0;
+    let skipped = 0;
+
+    for (let i = 0; i < videos.length; i++) {
+      const video = videos[i];
+      const num = String(i + 1).padStart(3, '0');
+      const filename = `veo3-page-${num}.mp4`;
+      const url = video.currentSrc || video.src || '';
+
+      if (!url) {
+        updateStatus(`  [${num}] ⏭️ Sem src — pulando`);
+        skipped++;
+        continue;
+      }
+
+      try {
+        if (url.startsWith('http')) {
+          // HTTP URL — use existing triggerNativeDownload
+          updateStatus(`  [${num}] ⬇️ Download HTTP...`);
+          state.lastDownloadComplete = false;
+          await triggerNativeDownload(url, filename);
+          downloaded++;
+        } else if (url.startsWith('blob:')) {
+          // Blob URL — fetch blob then download
+          updateStatus(`  [${num}] ⬇️ Download blob...`);
+          try {
+            const response = await fetch(url);
+            const blob = await response.blob();
+            const blobUrl = URL.createObjectURL(blob);
+
+            const a = document.createElement('a');
+            a.href = blobUrl;
+            a.download = filename;
+            a.style.display = 'none';
+            document.body.appendChild(a);
+            a.click();
+
+            setTimeout(() => {
+              document.body.removeChild(a);
+              URL.revokeObjectURL(blobUrl);
+            }, 1000);
+
+            updateStatus(`  [${num}] ✅ ${filename}`);
+            downloaded++;
+          } catch (err) {
+            updateStatus(`  [${num}] ❌ Blob falhou: ${err.message}`);
+          }
+        } else {
+          updateStatus(`  [${num}] ⏭️ URL não suportada`);
+          skipped++;
+        }
+
+        // Small delay between downloads
+        if (i < videos.length - 1) {
+          await sleep(800);
+        }
+      } catch (err) {
+        updateStatus(`  [${num}] ❌ Erro: ${err.message}`);
+      }
+    }
+
+    updateStatus('────────────────────');
+    updateStatus(`📥 Resultado: ${downloaded} baixados | ${skipped} sem src`);
+
+    // Re-enable button
+    if (dlPageBtn) {
+      dlPageBtn.disabled = false;
+      dlPageBtn.style.opacity = '1';
+    }
+  }
+
+  // ============================================================================
   // BATCH PROCESS ORCHESTRATION
   // ============================================================================
   function stopBatch() {
@@ -1757,7 +1914,7 @@
   // DEBUG & DIAGNOSTICS
   // ============================================================================
   function performDiagnostics() {
-    console.log('🔍 VEO3 Batch Automator v1.0.0 — Diagnostics');
+    console.log('🔍 VEO3 Batch Automator v1.1.0 — Diagnostics');
     console.log('='.repeat(50));
 
     const inputEl = findElement(SELECTORS.inputField, 'input');
@@ -1785,7 +1942,7 @@
   // INITIALIZATION
   // ============================================================================
   function init() {
-    console.log('🎬 VEO3 Batch Automator v1.0.0');
+    console.log('🎬 VEO3 Batch Automator v1.1.0');
     console.log(`📁 Downloads → ${CONFIG.DOWNLOAD_FOLDER}/001.mp4, 002.mp4, ...`);
     injectStyles();
     createFloatingBubble();
