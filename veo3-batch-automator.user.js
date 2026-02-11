@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Veo3 Prompt Batch Automator
 // @namespace    https://synkra.io/
-// @version      1.1.0
+// @version      1.2.0
 // @description  Automate batch video generation in Google Veo 3.1 — Send All then Download All
 // @author       j. felipe
 // @match        https://labs.google/fx/pt/tools/flow/project/*
@@ -31,7 +31,11 @@
     lastVideoElement: null,  // Track the most recently generated video
     videoCountBeforeGen: 0,  // Count videos before generation starts
     phase: 'idle',           // 'idle' | 'sending' | 'downloading'
-    completedVideos: []      // { index, prompt, videoElement } - tracked for Phase 2 download
+    completedVideos: [],      // { index, prompt, videoElement } - tracked for Phase 2 download
+    // Character Consistency
+    includeImagesEnabled: false,
+    detectedImageCount: 0,
+    imageSelectionInProgress: false
   };
 
   // ============================================================================
@@ -92,7 +96,11 @@
     MICRO_DELAY_MAX: 600,         // Max micro-delay between actions (ms)
     DOWNLOAD_FOLDER: 'veo3-batch', // Subfolder in Downloads
     QUEUE_BATCH_SIZE: 5,           // VEO3 max queue size
-    QUEUE_COOLDOWN: 15000          // Cooldown after full batch (15s)
+    QUEUE_COOLDOWN: 15000,          // Cooldown after full batch (15s)
+    IMAGE_SELECT_DELAY: 500,        // Delay after selecting each image (ms)
+    TAB_SWITCH_DELAY: 700,          // Delay after switching tabs (ms)
+    IMAGE_HOVER_DELAY: 400,         // Delay after hovering over image card (ms)
+    MAX_IMAGE_SELECT_RETRIES: 3     // Max retries for selecting images
   };
 
   // ============================================================================
@@ -259,6 +267,23 @@
             box-sizing: border-box;
           " placeholder="Paste your prompts here...&#10;One per line"></textarea>
         </div>
+        <div id="veo3-image-options" style="
+          background: rgba(255,255,255,0.1); padding: 10px 12px; border-radius: 8px;
+          margin-bottom: 12px; display: flex; flex-direction: column; gap: 8px;
+        ">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <input type="checkbox" id="veo3-include-images-cb" style="
+              width: 16px; height: 16px; cursor: pointer; accent-color: #4CAF50;
+            ">
+            <label for="veo3-include-images-cb" style="
+              font-size: 12px; font-weight: 500; cursor: pointer; user-select: none;
+            ">Incluir imagens no comando</label>
+          </div>
+          <div id="veo3-image-count" style="
+            font-size: 11px; color: rgba(255,255,255,0.7); padding-left: 24px;
+            display: none;
+          ">Detectando imagens...</div>
+        </div>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
           <button id="veo3-start-btn" style="
             padding: 10px; background: #4CAF50; color: white; border: none;
@@ -272,16 +297,34 @@
           " disabled>&#128229; Baixar Todos</button>
         </div>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
-          <button id="veo3-dl-page-btn" style="
-            padding: 10px; background: #00BCD4; color: white; border: none;
-            border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px;
-            transition: background 0.2s;
-          ">&#128249; Baixar vídeos da página</button>
           <button id="veo3-scan-page-btn" style="
             padding: 10px; background: #78909C; color: white; border: none;
             border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px;
             transition: background 0.2s;
           ">&#128269; Ler página</button>
+          <div id="veo3-video-count-badge" style="
+            padding: 10px; background: rgba(255,255,255,0.1); border-radius: 6px;
+            font-size: 12px; font-weight: 600; display: flex; align-items: center;
+            justify-content: center; color: rgba(255,255,255,0.7);
+          ">— vídeos</div>
+        </div>
+        <div style="
+          background: rgba(255,255,255,0.1); padding: 10px 12px; border-radius: 8px;
+          margin-bottom: 8px; display: flex; flex-direction: column; gap: 8px;
+        ">
+          <label for="veo3-folder-name" style="font-size: 11px; font-weight: 500; color: rgba(255,255,255,0.8);">Nome da pasta:</label>
+          <input id="veo3-folder-name" type="text" style="
+            width: 100%; padding: 8px 10px; border: none; border-radius: 6px;
+            font-size: 12px; color: #333; box-sizing: border-box;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+          " placeholder="Ex: URSO 2, Cena Final...">
+        </div>
+        <div style="margin-bottom: 8px;">
+          <button id="veo3-dl-page-btn" style="
+            width: 100%; padding: 10px; background: #00BCD4; color: white; border: none;
+            border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px;
+            transition: background 0.2s;
+          ">&#128249; Baixar vídeos da página</button>
         </div>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 15px;">
           <button id="veo3-pause-btn" style="
@@ -373,6 +416,58 @@
     scanPageBtn.addEventListener('click', scanPageVideos);
     pauseBtn.addEventListener('click', togglePause);
     stopBtn.addEventListener('click', stopBatch);
+
+    // Folder name: restore saved value + auto-save on change
+    const folderNameInput = document.getElementById('veo3-folder-name');
+    try {
+      const savedFolder = localStorage.getItem('veo3-folder-name');
+      if (savedFolder) folderNameInput.value = savedFolder;
+    } catch (e) { /* ignore */ }
+    folderNameInput.addEventListener('input', () => {
+      try { localStorage.setItem('veo3-folder-name', folderNameInput.value); } catch (e) { /* ignore */ }
+    });
+
+    // Character Consistency: checkbox + image count indicator
+    const includeImagesCb = document.getElementById('veo3-include-images-cb');
+    const imageCountEl = document.getElementById('veo3-image-count');
+
+    // Restore saved preference
+    try {
+      const saved = localStorage.getItem('veo3-include-images');
+      if (saved === 'true') {
+        includeImagesCb.checked = true;
+        state.includeImagesEnabled = true;
+        imageCountEl.style.display = 'block';
+        // Detect images after panel renders
+        setTimeout(async () => {
+          const count = await detectImagesOnPage();
+          state.detectedImageCount = count;
+          imageCountEl.textContent = count > 0
+            ? `🖼️ ${count} imagem(ns) detectada(s)`
+            : '⚠️ Nenhuma imagem detectada';
+        }, 2000);
+      }
+    } catch (e) { /* ignore */ }
+
+    includeImagesCb.addEventListener('change', async () => {
+      state.includeImagesEnabled = includeImagesCb.checked;
+      try {
+        localStorage.setItem('veo3-include-images', String(includeImagesCb.checked));
+      } catch (e) { /* ignore */ }
+
+      if (includeImagesCb.checked) {
+        imageCountEl.style.display = 'block';
+        imageCountEl.textContent = 'Detectando imagens...';
+        const count = await detectImagesOnPage();
+        state.detectedImageCount = count;
+        imageCountEl.textContent = count > 0
+          ? `🖼️ ${count} imagem(ns) detectada(s)`
+          : '⚠️ Nenhuma imagem detectada';
+      } else {
+        imageCountEl.style.display = 'none';
+        state.detectedImageCount = 0;
+      }
+    });
 
     return panel;
   }
@@ -706,6 +801,443 @@
       }
     }
     return false;
+  }
+
+  // ============================================================================
+  // CHARACTER CONSISTENCY: IMAGE SELECTION
+  // ============================================================================
+
+  // Find a tab element by its visible text (e.g., "Imagens", "Vídeos")
+  function findTabByText(tabName) {
+    const lowerName = tabName.toLowerCase();
+
+    // Strategy 1: role=tab elements
+    const tabs = document.querySelectorAll('[role="tab"]');
+    for (const tab of tabs) {
+      if (tab.closest('#veo3-panel, #veo3-bubble')) continue;
+      const text = (tab.textContent || '').trim().toLowerCase();
+      if (text.includes(lowerName)) return tab;
+    }
+
+    // Strategy 2: buttons in tab-like containers
+    const buttons = document.querySelectorAll('button');
+    for (const btn of buttons) {
+      if (btn.closest('#veo3-panel, #veo3-bubble')) continue;
+      const text = (btn.textContent || '').trim().toLowerCase();
+      if (text === lowerName || text.includes(lowerName)) {
+        // Check if it's in a tab-like context (parent has multiple sibling buttons)
+        const parent = btn.parentElement;
+        if (parent && parent.querySelectorAll('button').length >= 2) {
+          return btn;
+        }
+      }
+    }
+
+    // Strategy 3: TreeWalker for text nodes
+    const walker = document.createTreeWalker(
+      document.body,
+      NodeFilter.SHOW_TEXT,
+      {
+        acceptNode: (node) => {
+          if (node.parentElement?.closest('#veo3-panel, #veo3-bubble')) return NodeFilter.FILTER_REJECT;
+          return (node.textContent || '').trim().toLowerCase().includes(lowerName)
+            ? NodeFilter.FILTER_ACCEPT
+            : NodeFilter.FILTER_REJECT;
+        }
+      }
+    );
+
+    let textNode;
+    while (textNode = walker.nextNode()) {
+      let el = textNode.parentElement;
+      while (el && el !== document.body) {
+        if (el.matches('button, [role="tab"], a[role="tab"], [tabindex]')) {
+          if (el.offsetParent !== null) return el;
+        }
+        el = el.parentElement;
+      }
+    }
+
+    return null;
+  }
+
+  // Switch to a named tab (e.g., "Imagens" or "Vídeos")
+  async function switchToTab(tabName) {
+    const tab = findTabByText(tabName);
+    if (!tab) {
+      console.warn(`⚠️ Tab "${tabName}" not found`);
+      return false;
+    }
+
+    // Check if already active
+    const isActive = tab.getAttribute('aria-selected') === 'true' ||
+                     tab.classList.contains('active') ||
+                     tab.classList.contains('selected');
+    if (isActive) {
+      console.log(`📑 Tab "${tabName}" already active`);
+      return true;
+    }
+
+    // Human-like click
+    const rect = tab.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+
+    tab.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+    await sleep(40 + Math.random() * 80);
+    tab.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+    await sleep(10 + Math.random() * 30);
+    tab.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+
+    await sleep(CONFIG.TAB_SWITCH_DELAY);
+    console.log(`📑 Switched to tab: "${tabName}"`);
+    return true;
+  }
+
+  // Hover over an image card to reveal the "Incluir no comando" button
+  async function hoverOverImageCard(container) {
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+
+    // Mouse events on the container
+    container.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, clientX: cx, clientY: cy }));
+    container.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: cx, clientY: cy }));
+    container.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: cx, clientY: cy }));
+    await sleep(300);
+
+    // Hover on parent containers
+    let parent = container.parentElement;
+    for (let i = 0; i < 3 && parent; i++) {
+      parent.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, clientX: cx, clientY: cy }));
+      parent.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: cx, clientY: cy }));
+      parent.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: cx, clientY: cy }));
+      parent = parent.parentElement;
+    }
+    await sleep(300);
+
+    // Pointer events
+    container.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true, clientX: cx, clientY: cy }));
+    container.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: cx, clientY: cy }));
+    container.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, clientX: cx, clientY: cy }));
+    await sleep(CONFIG.IMAGE_HOVER_DELAY);
+  }
+
+  // Find image cards on the Imagens tab (large images = generated reference images)
+  function findImageCards() {
+    const cards = [];
+    const seen = new Set();
+
+    // Strategy 1: Large img elements (generated images are typically > 200px)
+    const imgs = document.querySelectorAll('img');
+    for (const img of imgs) {
+      if (img.closest('#veo3-panel, #veo3-bubble')) continue;
+      if (img.offsetParent === null) continue;
+      const w = img.naturalWidth || img.width || img.getBoundingClientRect().width;
+      const h = img.naturalHeight || img.height || img.getBoundingClientRect().height;
+      if (w > 150 && h > 150) {
+        // Find the card container (walk up to a meaningful wrapper)
+        let card = img.parentElement;
+        for (let i = 0; i < 5 && card; i++) {
+          if (card.offsetWidth > 200 && card.offsetHeight > 200) break;
+          card = card.parentElement;
+        }
+        if (card && !seen.has(card)) {
+          seen.add(card);
+          cards.push({ element: card, img });
+          console.log(`🖼️ Card found: ${img.src?.substring(0, 60) || 'no-src'} (${Math.round(w)}x${Math.round(h)})`);
+        }
+      }
+    }
+
+    // Strategy 2: Figure elements or elements with image-related classes
+    if (cards.length === 0) {
+      const figures = document.querySelectorAll('figure, [class*="image-card"], [class*="imageCard"], [class*="gallery-item"]');
+      for (const fig of figures) {
+        if (fig.closest('#veo3-panel, #veo3-bubble')) continue;
+        if (fig.offsetParent === null) continue;
+        if (!seen.has(fig)) {
+          seen.add(fig);
+          const img = fig.querySelector('img');
+          cards.push({ element: fig, img });
+        }
+      }
+    }
+
+    console.log(`🖼️ findImageCards: ${cards.length} card(s) found`);
+    return cards;
+  }
+
+  // Search for "Incluir no comando" button near/within a specific card element
+  function findIncluirButtonNear(cardEl) {
+    // Search scope: the card and a few parent levels
+    const searchRoots = [cardEl];
+    let parent = cardEl.parentElement;
+    for (let i = 0; i < 3 && parent; i++) {
+      searchRoots.push(parent);
+      parent = parent.parentElement;
+    }
+
+    for (const root of searchRoots) {
+      // Check aria-label
+      const ariaButtons = root.querySelectorAll(
+        'button[aria-label*="Incluir"], button[aria-label*="incluir"], button[aria-label*="Include"], ' +
+        '[role="button"][aria-label*="Incluir"], [role="button"][aria-label*="incluir"], ' +
+        'button[title*="Incluir"], button[title*="incluir"]'
+      );
+      for (const btn of ariaButtons) {
+        if (btn.closest('#veo3-panel, #veo3-bubble')) continue;
+        console.log(`🖼️ Found "Incluir" btn via aria/title: tag=${btn.tagName} aria="${btn.getAttribute('aria-label') || ''}" visible=${btn.offsetParent !== null}`);
+        return btn; // Return even if offsetParent is null — it may be in hover overlay
+      }
+
+      // Check text content of buttons
+      const allBtns = root.querySelectorAll('button, [role="button"], a');
+      for (const btn of allBtns) {
+        if (btn.closest('#veo3-panel, #veo3-bubble')) continue;
+        const text = (btn.textContent || '').toLowerCase();
+        if (text.includes('incluir') || text.includes('include in')) {
+          console.log(`🖼️ Found "Incluir" btn via text: tag=${btn.tagName} text="${text.trim().substring(0, 40)}" visible=${btn.offsetParent !== null}`);
+          return btn;
+        }
+      }
+    }
+
+    // Global fallback: TreeWalker for ANY "Incluir no comando" text
+    const walker = document.createTreeWalker(
+      document.body,
+      NodeFilter.SHOW_TEXT,
+      {
+        acceptNode: (node) => {
+          if (node.parentElement?.closest('#veo3-panel, #veo3-bubble')) return NodeFilter.FILTER_REJECT;
+          const text = (node.textContent || '').trim().toLowerCase();
+          return (text.includes('incluir no comando') || text === 'incluir')
+            ? NodeFilter.FILTER_ACCEPT
+            : NodeFilter.FILTER_REJECT;
+        }
+      }
+    );
+
+    let textNode;
+    while (textNode = walker.nextNode()) {
+      let el = textNode.parentElement;
+      while (el && el !== document.body) {
+        if (el.matches('button, [role="button"], a, [tabindex], span[role], div[role="button"]')) {
+          console.log(`🖼️ Found "Incluir" btn via TreeWalker: tag=${el.tagName} text="${(el.textContent || '').trim().substring(0, 40)}" visible=${el.offsetParent !== null}`);
+          return el;
+        }
+        el = el.parentElement;
+      }
+    }
+
+    return null;
+  }
+
+  // Detect how many images are available on the "Imagens" tab
+  async function detectImagesOnPage() {
+    try {
+      // Switch to Images tab
+      const switched = await switchToTab('Imagens');
+      if (!switched) {
+        await switchToTab('Images');
+      }
+      await sleep(800);
+
+      const cards = findImageCards();
+      const count = cards.length;
+
+      console.log(`🖼️ Detected ${count} image(s) on page`);
+
+      // Switch back to Videos tab
+      const switchedBack = await switchToTab('Vídeos');
+      if (!switchedBack) {
+        await switchToTab('Videos');
+      }
+
+      return count;
+    } catch (err) {
+      console.warn(`⚠️ Image detection failed: ${err.message}`);
+      return 0;
+    }
+  }
+
+  // Multi-strategy click for framework-bound buttons
+  async function clickIncluirButton(btn) {
+    const rect = btn.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+
+    // Snapshot state before click
+    const textBefore = (btn.textContent || '').trim();
+    const classBefore = btn.className;
+
+    // Strategy A: Full pointer + mouse event sequence
+    btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+    await sleep(50);
+    btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+    await sleep(50);
+    btn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+    await sleep(30);
+    btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+    await sleep(20);
+    btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+    await sleep(250);
+
+    // Check if it worked
+    if (!btn.isConnected || (btn.textContent || '').trim() !== textBefore || btn.className !== classBefore) {
+      return true;
+    }
+
+    // Strategy B: Native .click()
+    btn.click();
+    await sleep(250);
+
+    if (!btn.isConnected || (btn.textContent || '').trim() !== textBefore || btn.className !== classBefore) {
+      return true;
+    }
+
+    // Strategy C: Focus + Enter
+    btn.focus();
+    await sleep(80);
+    btn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true, cancelable: true }));
+    btn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true, cancelable: true }));
+    await sleep(250);
+
+    if (!btn.isConnected || (btn.textContent || '').trim() !== textBefore || btn.className !== classBefore) {
+      return true;
+    }
+
+    // Strategy D: Dispatch click on all ancestors (framework might listen on parent)
+    let ancestor = btn.parentElement;
+    for (let i = 0; i < 3 && ancestor; i++) {
+      ancestor.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+      ancestor = ancestor.parentElement;
+    }
+    await sleep(250);
+
+    return !btn.isConnected || (btn.textContent || '').trim() !== textBefore || btn.className !== classBefore;
+  }
+
+  // Main orchestrator: select all reference images before sending a prompt
+  async function selectAllImages() {
+    if (state.imageSelectionInProgress) {
+      return { success: false, count: 0, error: 'Seleção já em andamento' };
+    }
+
+    state.imageSelectionInProgress = true;
+
+    try {
+      // Step 1: Switch to Images tab
+      let switched = await switchToTab('Imagens');
+      if (!switched) {
+        switched = await switchToTab('Images');
+      }
+      if (!switched) {
+        return { success: false, count: 0, error: 'Aba Imagens não encontrada' };
+      }
+      await sleep(600);
+
+      // Step 2: Find image cards (the containers with generated images)
+      const imageCards = findImageCards();
+      if (imageCards.length === 0) {
+        await switchToTab('Vídeos') || await switchToTab('Videos');
+        return { success: false, count: 0, error: 'Nenhum card de imagem encontrado na aba Imagens' };
+      }
+
+      // Step 3: For EACH card: hover → find "Incluir" button → click
+      let selectedCount = 0;
+      for (let i = 0; i < imageCards.length; i++) {
+        const { element: card, img } = imageCards[i];
+
+        console.log(`🖼️ Processing image ${i + 1}/${imageCards.length}...`);
+
+        for (let retry = 0; retry < CONFIG.MAX_IMAGE_SELECT_RETRIES; retry++) {
+          try {
+            // Scroll card into view
+            card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            await sleep(300);
+
+            // Hover to reveal overlay controls
+            await hoverOverImageCard(card);
+            // Also hover directly on the img element
+            if (img) await hoverOverImageCard(img);
+            await sleep(500);
+
+            // Now search for the "Incluir no comando" button that should have appeared
+            let incluirBtn = findIncluirButtonNear(card);
+
+            if (!incluirBtn) {
+              console.log(`🖼️ Image ${i + 1}: no button after hover — re-hovering...`);
+              // Try hovering more aggressively with movement simulation
+              const cardRect = card.getBoundingClientRect();
+              for (let mx = 0; mx < 3; mx++) {
+                const x = cardRect.left + (cardRect.width * (mx + 1)) / 4;
+                const y = cardRect.top + cardRect.height / 2;
+                card.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: x, clientY: y }));
+                await sleep(150);
+              }
+              await sleep(500);
+              incluirBtn = findIncluirButtonNear(card);
+            }
+
+            if (!incluirBtn) {
+              console.warn(`🖼️ Image ${i + 1}: "Incluir" button NOT found (retry ${retry + 1})`);
+              if (retry < CONFIG.MAX_IMAGE_SELECT_RETRIES - 1) {
+                // Move mouse away and back to re-trigger hover
+                document.body.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 0, clientY: 0 }));
+                await sleep(300);
+                continue; // retry
+              }
+              break; // give up on this card
+            }
+
+            // Click the "Incluir no comando" button
+            console.log(`🖼️ Image ${i + 1}: clicking "Incluir" button...`);
+            const confirmed = await clickIncluirButton(incluirBtn);
+
+            if (confirmed) {
+              console.log(`🖼️ ✅ Image ${i + 1}/${imageCards.length} — click confirmed!`);
+            } else {
+              console.log(`🖼️ ⚠️ Image ${i + 1}/${imageCards.length} — click sent but no state change`);
+            }
+
+            selectedCount++;
+            await sleep(CONFIG.IMAGE_SELECT_DELAY);
+            break; // success, move to next image
+          } catch (err) {
+            console.warn(`⚠️ Image ${i + 1} retry ${retry + 1}: ${err.message}`);
+            await sleep(500);
+          }
+        }
+      }
+
+      // Step 4: Switch back to Videos tab
+      const switchedBack = await switchToTab('Vídeos');
+      if (!switchedBack) {
+        await switchToTab('Videos');
+      }
+      await sleep(500);
+
+      // Step 5: Verify images appear in prompt area (circular thumbnails)
+      const promptArea = document.querySelector('[class*="prompt"], [class*="input"], [class*="command"]');
+      const thumbnails = promptArea ? promptArea.querySelectorAll('img') : [];
+      if (thumbnails.length > 0) {
+        console.log(`🖼️ ✅ ${thumbnails.length} thumbnail(s) visible in prompt area`);
+      } else {
+        console.log(`🖼️ ⚠️ No thumbnails detected in prompt area after selection`);
+      }
+
+      return { success: selectedCount > 0, count: selectedCount, error: null };
+    } catch (err) {
+      console.error(`❌ selectAllImages error: ${err.message}`);
+      try {
+        await switchToTab('Vídeos') || await switchToTab('Videos');
+      } catch (e) { /* ignore */ }
+      return { success: false, count: 0, error: err.message };
+    } finally {
+      state.imageSelectionInProgress = false;
+    }
   }
 
   // ============================================================================
@@ -1447,6 +1979,14 @@
 
     updateStatus('────────────────────');
 
+    // Update video count badge in panel
+    const countBadge = document.getElementById('veo3-video-count-badge');
+    if (countBadge) {
+      countBadge.textContent = `📹 ${videos.length} vídeo(s)`;
+      countBadge.style.color = 'white';
+      countBadge.style.background = 'rgba(0, 188, 212, 0.3)';
+    }
+
     // Update bubble badge with video count
     const badge = document.getElementById('veo3-badge');
     if (badge && !state.isRunning) {
@@ -1523,12 +2063,40 @@
     await sleep(400);
   }
 
+  // Save a blob directly to a folder using File System Access API
+  async function saveToFolder(dirHandle, filename, blob) {
+    const fileHandle = await dirHandle.getFileHandle(filename, { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+  }
+
+  // Fetch video data as a Blob from any URL type
+  async function fetchVideoBlob(url) {
+    if (!url) return null;
+    if (url.startsWith('http') || url.startsWith('blob:')) {
+      try {
+        const response = await fetch(url);
+        return await response.blob();
+      } catch (err) {
+        console.warn(`⚠️ fetchVideoBlob failed: ${err.message}`);
+        return null;
+      }
+    }
+    return null;
+  }
+
   async function downloadPageVideos() {
     const dlPageBtn = document.getElementById('veo3-dl-page-btn');
     const videos = document.querySelectorAll('video');
 
+    // Get folder name
+    const folderInput = document.getElementById('veo3-folder-name');
+    const rawFolderName = (folderInput?.value || '').trim();
+    // Sanitize: remove chars that are invalid in filenames
+    const folderName = rawFolderName.replace(/[<>:"/\\|?*]/g, '').trim();
+
     updateStatus('────────────────────');
-    updateStatus(`📥 Baixando vídeos da página...`);
 
     if (videos.length === 0) {
       updateStatus('⚠️ Nenhum <video> encontrado na página.');
@@ -1541,43 +2109,101 @@
       dlPageBtn.style.opacity = '0.5';
     }
 
+    // ── Try File System Access API for real folder creation ──
+    let dirHandle = null;
+    if (folderName && window.showDirectoryPicker) {
+      try {
+        updateStatus(`📂 Selecione onde criar a pasta "${folderName}"...`);
+        const parentDir = await window.showDirectoryPicker({ mode: 'readwrite' });
+        dirHandle = await parentDir.getDirectoryHandle(folderName, { create: true });
+        updateStatus(`📂 Pasta "${folderName}" criada! Baixando ${videos.length} vídeos...`);
+      } catch (err) {
+        if (err.name === 'AbortError') {
+          updateStatus('⚠️ Seleção de pasta cancelada.');
+          if (dlPageBtn) { dlPageBtn.disabled = false; dlPageBtn.style.opacity = '1'; }
+          return;
+        }
+        console.warn(`⚠️ File System API failed: ${err.message}. Falling back to prefix.`);
+        dirHandle = null;
+      }
+    }
+
+    // Fallback: use folder name as prefix
+    const useFolder = !!dirHandle;
+    const filePrefix = (!useFolder && folderName) ? `${folderName}-` : (!useFolder ? 'veo3-page-' : '');
+
+    if (!useFolder) {
+      if (folderName) {
+        updateStatus(`📥 Baixando vídeos → prefixo "${folderName}-"...`);
+      } else {
+        updateStatus(`📥 Baixando vídeos da página...`);
+      }
+    }
+
     let downloaded = 0;
     let failed = 0;
 
     for (let i = 0; i < videos.length; i++) {
       const video = videos[i];
       const num = String(i + 1).padStart(3, '0');
-      const filename = `veo3-page-${num}.mp4`;
+      const filename = useFolder ? `${num}.mp4` : `${filePrefix}${num}.mp4`;
       const url = video.currentSrc || video.src || '';
       let success = false;
 
       try {
+        // ── Strategy 0: Save directly to folder (File System API) ──
+        if (useFolder && (url.startsWith('http') || url.startsWith('blob:'))) {
+          updateStatus(`  [${num}] 📂 Salvando na pasta...`);
+          const blob = await fetchVideoBlob(url);
+          if (blob && blob.size > 0) {
+            await saveToFolder(dirHandle, filename, blob);
+            updateStatus(`  [${num}] ✅ ${folderName}/${filename}`);
+            success = true;
+          }
+        }
+
         // ── Strategy 1: Direct URL download (HTTP) ──
         if (!success && url.startsWith('http')) {
           updateStatus(`  [${num}] ⬇️ Download direto (HTTP)...`);
-          state.lastDownloadComplete = false;
-          await triggerNativeDownload(url, filename);
-          if (state.lastDownloadComplete) success = true;
+          if (useFolder) {
+            // Try fetching for folder save
+            const blob = await fetchVideoBlob(url);
+            if (blob && blob.size > 0) {
+              await saveToFolder(dirHandle, filename, blob);
+              updateStatus(`  [${num}] ✅ ${useFolder ? folderName + '/' : ''}${filename}`);
+              success = true;
+            }
+          }
+          if (!success) {
+            state.lastDownloadComplete = false;
+            await triggerNativeDownload(url, filename);
+            if (state.lastDownloadComplete) success = true;
+          }
         }
 
         // ── Strategy 2: Blob URL download ──
         if (!success && url.startsWith('blob:')) {
           updateStatus(`  [${num}] ⬇️ Download blob...`);
           try {
-            const response = await fetch(url);
-            const blob = await response.blob();
-            const blobUrl = URL.createObjectURL(blob);
-
-            const a = document.createElement('a');
-            a.href = blobUrl;
-            a.download = filename;
-            a.style.display = 'none';
-            document.body.appendChild(a);
-            a.click();
-            setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(blobUrl); }, 1000);
-
-            updateStatus(`  [${num}] ✅ ${filename}`);
-            success = true;
+            const blob = await fetchVideoBlob(url);
+            if (blob) {
+              if (useFolder) {
+                await saveToFolder(dirHandle, filename, blob);
+                updateStatus(`  [${num}] ✅ ${folderName}/${filename}`);
+                success = true;
+              } else {
+                const blobUrl = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = blobUrl;
+                a.download = filename;
+                a.style.display = 'none';
+                document.body.appendChild(a);
+                a.click();
+                setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(blobUrl); }, 1000);
+                updateStatus(`  [${num}] ✅ ${filename}`);
+                success = true;
+              }
+            }
           } catch (err) {
             console.warn(`  [${num}] Blob fetch failed: ${err.message}`);
           }
@@ -1628,8 +2254,17 @@
               const href = anchor?.href;
               if (href && !href.startsWith('javascript:') && !href.startsWith('#')) {
                 restoreWindowOpen();
-                await triggerNativeDownload(href, filename);
-                success = state.lastDownloadComplete;
+                if (useFolder) {
+                  const blob = await fetchVideoBlob(href);
+                  if (blob && blob.size > 0) {
+                    await saveToFolder(dirHandle, filename, blob);
+                    success = true;
+                  }
+                }
+                if (!success) {
+                  await triggerNativeDownload(href, filename);
+                  success = state.lastDownloadComplete;
+                }
               } else {
                 qualityOption.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
                 await sleep(2000);
@@ -1646,14 +2281,23 @@
               if (!success) {
                 const freshSrc = video.src || video.currentSrc || '';
                 if (freshSrc && freshSrc.startsWith('http')) {
-                  await triggerNativeDownload(freshSrc, filename);
-                  success = state.lastDownloadComplete;
+                  if (useFolder) {
+                    const blob = await fetchVideoBlob(freshSrc);
+                    if (blob && blob.size > 0) {
+                      await saveToFolder(dirHandle, filename, blob);
+                      success = true;
+                    }
+                  }
+                  if (!success) {
+                    await triggerNativeDownload(freshSrc, filename);
+                    success = state.lastDownloadComplete;
+                  }
                 }
               }
             }
 
             if (success) {
-              updateStatus(`  [${num}] ✅ ${filename}`);
+              updateStatus(`  [${num}] ✅ ${useFolder ? folderName + '/' : ''}${filename}`);
             } else {
               updateStatus(`  [${num}] ⚠️ Download não confirmado`);
             }
@@ -1681,7 +2325,11 @@
     updateStatus('────────────────────');
     updateStatus(`📥 Resultado: ${downloaded} baixados | ${failed} falharam`);
     if (downloaded > 0) {
-      updateStatus(`📂 Arquivos: veo3-page-001.mp4, etc`);
+      if (useFolder) {
+        updateStatus(`📂 Arquivos em: ${folderName}/001.mp4, 002.mp4, etc`);
+      } else {
+        updateStatus(`📂 Arquivos: ${filePrefix}001.mp4, etc`);
+      }
     }
 
     // Re-enable button
@@ -1767,6 +2415,18 @@
         try {
           // Check queue availability before sending
           await waitForQueueSlot();
+
+          // Select reference images if enabled
+          if (state.includeImagesEnabled) {
+            updateStatus(`[${paddedNum}] 🖼️ Selecionando imagens de referência...`);
+            const imageResult = await selectAllImages();
+            if (!imageResult.success) {
+              updateStatus(`[${paddedNum}] ⚠️ Imagens não selecionadas: ${imageResult.error || 'desconhecido'}`);
+            } else {
+              updateStatus(`[${paddedNum}] ✅ ${imageResult.count} imagem(ns) incluída(s)`);
+            }
+            await microDelay();
+          }
 
           await injectPrompt(prompt);
           await microDelay(); // Natural pause after typing
@@ -2060,7 +2720,7 @@
   // DEBUG & DIAGNOSTICS
   // ============================================================================
   function performDiagnostics() {
-    console.log('🔍 VEO3 Batch Automator v1.1.0 — Diagnostics');
+    console.log('🔍 VEO3 Batch Automator v1.2.0 — Diagnostics');
     console.log('='.repeat(50));
 
     const inputEl = findElement(SELECTORS.inputField, 'input');
@@ -2081,6 +2741,16 @@
 
     console.log(`  Download mode: Native browser download`);
     console.log(`  Filenames: ${CONFIG.DOWNLOAD_FOLDER}/001.mp4, 002.mp4, ...`);
+
+    // Character Consistency diagnostics
+    console.log(`  Include images: ${state.includeImagesEnabled ? 'ENABLED ✅' : 'disabled'}`);
+    const imagesTab = findTabByText('Imagens') || findTabByText('Images');
+    console.log(`  Images tab: ${imagesTab ? 'found ✅' : 'not found'}`);
+    const videosTab = findTabByText('Vídeos') || findTabByText('Videos');
+    console.log(`  Videos tab: ${videosTab ? 'found ✅' : 'not found'}`);
+    if (state.detectedImageCount > 0) {
+      console.log(`  Detected images: ${state.detectedImageCount}`);
+    }
     console.log('='.repeat(50));
   }
 
@@ -2088,7 +2758,7 @@
   // INITIALIZATION
   // ============================================================================
   function init() {
-    console.log('🎬 VEO3 Batch Automator v1.1.0');
+    console.log('🎬 VEO3 Batch Automator v1.2.0');
     console.log(`📁 Downloads → ${CONFIG.DOWNLOAD_FOLDER}/001.mp4, 002.mp4, ...`);
     injectStyles();
     createFloatingBubble();
