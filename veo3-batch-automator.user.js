@@ -409,76 +409,27 @@
     downloadAllBtn.addEventListener('mouseleave', () => { if (!downloadAllBtn.disabled) downloadAllBtn.style.background = '#2196F3'; });
     dlPageBtn.addEventListener('mouseenter', () => { if (!dlPageBtn.disabled) dlPageBtn.style.background = '#0097A7'; });
     dlPageBtn.addEventListener('mouseleave', () => { if (!dlPageBtn.disabled) dlPageBtn.style.background = '#00BCD4'; });
-    // DIAGNOSTIC BUTTON — shows exactly what elements VEO3 has on the page
-    const diagBtn = document.createElement('button');
-    diagBtn.textContent = '🔍 Diagnóstico DOM';
-    diagBtn.style.cssText = 'padding:6px 10px;background:#FF9800;color:white;border:none;border-radius:4px;cursor:pointer;font-size:11px;margin-top:6px;width:100%';
-    diagBtn.addEventListener('click', () => {
-      const info = [];
-      info.push('=== VEO3 DOM DIAGNOSTIC ===');
+    // DIAGNOSTIC BUTTONS — light and deep page analysis
+    const diagContainer = document.createElement('div');
+    diagContainer.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;margin-bottom:2px';
 
-      // All textareas
-      const tas = document.querySelectorAll('textarea');
-      info.push(`\nTEXTAREAS (${tas.length}):`);
-      tas.forEach((ta, i) => {
-        const inPanel = ta.closest('#veo3-panel, #veo3-bubble') ? ' [OUR PANEL]' : '';
-        const rkeys = Object.keys(ta).filter(k => k.startsWith('__react')).join(',');
-        info.push(`  [${i}] id="${ta.id}" placeholder="${(ta.placeholder || '').substring(0, 50)}" visible=${ta.offsetParent !== null} rows=${ta.rows} value="${(ta.value || '').substring(0, 20)}" react=[${rkeys}]${inPanel}`);
-      });
+    const diagLightBtn = document.createElement('button');
+    diagLightBtn.id = 'veo3-diag-light-btn';
+    diagLightBtn.textContent = '🔍 Diag Rápido';
+    diagLightBtn.style.cssText = 'padding:6px 10px;background:#FF9800;color:white;border:none;border-radius:4px;cursor:pointer;font-size:11px';
+    diagLightBtn.addEventListener('click', () => runDiagnostic('light'));
 
-      // All contenteditables
-      const ces = document.querySelectorAll('[contenteditable="true"]');
-      info.push(`\nCONTENTEDITABLES (${ces.length}):`);
-      ces.forEach((ce, i) => {
-        const inPanel = ce.closest('#veo3-panel, #veo3-bubble') ? ' [OUR PANEL]' : '';
-        const rkeys = Object.keys(ce).filter(k => k.startsWith('__react')).join(',');
-        info.push(`  [${i}] <${ce.tagName}> id="${ce.id}" role="${ce.getAttribute('role')}" visible=${ce.offsetParent !== null} text="${(ce.textContent || '').substring(0, 20)}" react=[${rkeys}]${inPanel}`);
-      });
+    const diagDeepBtn = document.createElement('button');
+    diagDeepBtn.id = 'veo3-diag-deep-btn';
+    diagDeepBtn.textContent = '🔬 Diag Profundo';
+    diagDeepBtn.style.cssText = 'padding:6px 10px;background:#E65100;color:white;border:none;border-radius:4px;cursor:pointer;font-size:11px';
+    diagDeepBtn.addEventListener('click', () => runDiagnostic('deep'));
 
-      // Shadow DOM search
-      info.push(`\nSHADOW DOM SEARCH:`);
-      let shadowCount = 0;
-      document.querySelectorAll('*').forEach(el => {
-        if (el.shadowRoot) {
-          shadowCount++;
-          const innerTAs = el.shadowRoot.querySelectorAll('textarea');
-          const innerCEs = el.shadowRoot.querySelectorAll('[contenteditable="true"]');
-          if (innerTAs.length > 0 || innerCEs.length > 0) {
-            info.push(`  Shadow in <${el.tagName}> id="${el.id}": ${innerTAs.length} textarea(s), ${innerCEs.length} contenteditable(s)`);
-          }
-        }
-      });
-      info.push(`  Total shadow roots found: ${shadowCount}`);
+    diagContainer.appendChild(diagLightBtn);
+    diagContainer.appendChild(diagDeepBtn);
 
-      // All inputs
-      const inputs = document.querySelectorAll('input');
-      info.push(`\nINPUTS (${inputs.length}):`);
-      inputs.forEach((inp, i) => {
-        if (inp.closest('#veo3-panel, #veo3-bubble')) return;
-        info.push(`  [${i}] type="${inp.type}" id="${inp.id}" name="${inp.name}" placeholder="${(inp.placeholder || '').substring(0, 40)}" visible=${inp.offsetParent !== null}`);
-      });
-
-      // Forms
-      const forms = document.querySelectorAll('form');
-      info.push(`\nFORMS (${forms.length}):`);
-      forms.forEach((f, i) => {
-        info.push(`  [${i}] id="${f.id}" action="${f.action}" method="${f.method}" elements=${f.elements.length}`);
-      });
-
-      const output = info.join('\n');
-      console.log(output);
-
-      // Also copy to clipboard
-      navigator.clipboard.writeText(output).then(() => {
-        updateStatus('📋 Diagnóstico copiado! Cole aqui no chat.');
-      }).catch(() => {
-        // Show in alert if clipboard fails
-        prompt('Copie o texto abaixo:', output);
-      });
-    });
-    // Insert diagnostic button before the status display
     const statusDisplay = document.getElementById('veo3-status-display');
-    statusDisplay.parentElement.insertBefore(diagBtn, statusDisplay);
+    statusDisplay.parentElement.insertBefore(diagContainer, statusDisplay);
 
     scanPageBtn.addEventListener('mouseenter', () => { scanPageBtn.style.background = '#607D8B'; });
     scanPageBtn.addEventListener('mouseleave', () => { scanPageBtn.style.background = '#78909C'; });
@@ -1522,6 +1473,243 @@
   }
 
   // ============================================================================
+  // DIAGNOSTIC SYSTEM
+  // ============================================================================
+
+  // mode: 'light' = quick overview (inputs, buttons, images count)
+  // mode: 'deep'  = full scan (all of light + @Name cards, Incluir buttons, tabs, DOM tree, image cards detail)
+  async function runDiagnostic(mode = 'light') {
+    const info = [];
+    const isDeep = mode === 'deep';
+    const ts = new Date().toLocaleTimeString('pt-BR');
+    info.push(`=== VEO3 DIAGNOSTIC (${isDeep ? 'PROFUNDO' : 'RÁPIDO'}) — ${ts} ===`);
+    info.push(`URL: ${window.location.href}`);
+    info.push(`Script: v1.5.0`);
+
+    updateStatus(`🔍 Executando diagnóstico ${isDeep ? 'profundo' : 'rápido'}...`);
+
+    // Disable buttons during diagnostic
+    const lightBtn = document.getElementById('veo3-diag-light-btn');
+    const deepBtn = document.getElementById('veo3-diag-deep-btn');
+    if (lightBtn) lightBtn.disabled = true;
+    if (deepBtn) deepBtn.disabled = true;
+
+    try {
+      // ─── SECTION 1: INPUT ELEMENTS ───
+      info.push('\n── INPUTS ──');
+      const tas = document.querySelectorAll('textarea');
+      info.push(`Textareas: ${tas.length}`);
+      tas.forEach((ta, i) => {
+        const ours = ta.closest('#veo3-panel, #veo3-bubble') ? ' [NOSSO]' : '';
+        info.push(`  [${i}] id="${ta.id}" placeholder="${(ta.placeholder || '').substring(0, 50)}" visible=${ta.offsetParent !== null}${ours}`);
+      });
+
+      const ces = document.querySelectorAll('[contenteditable="true"]');
+      info.push(`Contenteditables: ${ces.length}`);
+      ces.forEach((ce, i) => {
+        const ours = ce.closest('#veo3-panel, #veo3-bubble') ? ' [NOSSO]' : '';
+        info.push(`  [${i}] <${ce.tagName}> role="${ce.getAttribute('role') || ''}" visible=${ce.offsetParent !== null} text="${(ce.textContent || '').substring(0, 30)}"${ours}`);
+      });
+
+      // ─── SECTION 2: BUTTONS (send, download) ───
+      info.push('\n── BOTÕES ──');
+      const sendBtn = findElement(SELECTORS.sendButton, 'send');
+      info.push(`Botão Enviar: ${sendBtn ? `✅ <${sendBtn.tagName}> text="${(sendBtn.textContent || '').trim().substring(0, 30)}"` : '❌ NÃO ENCONTRADO'}`);
+
+      const dlBtn = findElement(SELECTORS.sendButton, 'download');
+      info.push(`Botão Download: ${dlBtn ? `✅ <${dlBtn.tagName}>` : '⚠️ não visível (normal se não há vídeo pronto)'}`);
+
+      // Google Symbols icons summary
+      const allIcons = document.querySelectorAll('i.google-symbols');
+      const iconNames = [];
+      allIcons.forEach(icon => {
+        const t = (icon.textContent || '').trim();
+        if (t && icon.offsetParent !== null) iconNames.push(t);
+      });
+      info.push(`Google Symbols visíveis: ${iconNames.length} → [${[...new Set(iconNames)].join(', ')}]`);
+
+      // ─── SECTION 3: IMAGES & VIDEOS ───
+      info.push('\n── IMAGENS & VÍDEOS ──');
+      const allImgs = document.querySelectorAll('img');
+      let contentImgs = 0;
+      allImgs.forEach(img => {
+        if (img.closest('#veo3-panel, #veo3-bubble')) return;
+        if (img.offsetParent === null) return;
+        const r = img.getBoundingClientRect();
+        if (r.width >= 80 && r.height >= 80) contentImgs++;
+      });
+      info.push(`Imagens totais: ${allImgs.length} | Conteúdo (≥80px): ${contentImgs}`);
+
+      const allVideos = document.querySelectorAll('video');
+      info.push(`Vídeos: ${allVideos.length}`);
+      allVideos.forEach((v, i) => {
+        info.push(`  [${i}] src="${(v.src || v.currentSrc || '').substring(0, 60)}" ${Math.round(v.getBoundingClientRect().width)}x${Math.round(v.getBoundingClientRect().height)} duration=${v.duration || '?'}`);
+      });
+
+      // ─── SECTION 4: @NAME CHARACTER DETECTION ───
+      info.push('\n── @NOME: PERSONAGENS ──');
+
+      // Find all visible text containing @
+      const atElements = [];
+      document.querySelectorAll('*:not(script):not(style):not(#veo3-panel *):not(#veo3-bubble *)').forEach(el => {
+        // Only leaf nodes or nodes with single text child
+        if (el.children.length > 0 && el.childNodes.length > 1) return;
+        const text = (el.textContent || '').trim();
+        if (!text.includes('@') || text.length > 300) return;
+        if (el.offsetParent === null && el.style.display !== 'contents') return;
+        atElements.push(el);
+      });
+
+      info.push(`Elementos com "@" visíveis: ${atElements.length}`);
+      atElements.forEach((el, i) => {
+        const text = (el.textContent || '').trim();
+        const rect = el.getBoundingClientRect();
+        const parentTag = el.parentElement ? `<${el.parentElement.tagName}>` : '';
+        info.push(`  [${i}] <${el.tagName}> ${parentTag} (${Math.round(rect.left)},${Math.round(rect.top)}) "${text.substring(0, 120)}"`);
+      });
+
+      // Run findCharacterCards()
+      const cardMap = findCharacterCards();
+      info.push(`\nfindCharacterCards() resultado: ${cardMap.size} personagem(ns)`);
+      for (const [name, card] of cardMap) {
+        const rect = card.getBoundingClientRect();
+        const hasImg = card.querySelector('img') ? '✅ tem img' : '❌ sem img';
+        info.push(`  @${name} → <${card.tagName}> cls="${(card.className || '').toString().substring(0, 50)}" (${Math.round(rect.left)},${Math.round(rect.top)}) ${Math.round(rect.width)}x${Math.round(rect.height)} ${hasImg}`);
+      }
+
+      // ─── SECTION 5 (DEEP ONLY): IMAGE CARDS + INCLUIR BUTTONS ───
+      if (isDeep) {
+        info.push('\n── [PROFUNDO] CARDS DE IMAGEM ──');
+        const imageCards = findImageCards();
+        info.push(`findImageCards(): ${imageCards.length} card(s)`);
+        for (let i = 0; i < imageCards.length; i++) {
+          const { element: card, img } = imageCards[i];
+          const rect = card.getBoundingClientRect();
+          const imgSrc = img ? (img.src || '').substring(0, 60) : 'sem-img';
+          info.push(`  [${i + 1}] <${card.tagName}> cls="${(card.className || '').toString().substring(0, 50)}" (${Math.round(rect.left)},${Math.round(rect.top)}) ${Math.round(rect.width)}x${Math.round(rect.height)} src="${imgSrc}"`);
+
+          // Check for nearby text containing @
+          const nearbyText = (card.textContent || '').trim();
+          const atMatch = nearbyText.match(/@\w[\w\s-]*?:/);
+          if (atMatch) {
+            info.push(`    📛 Nome detectado no card: "${atMatch[0]}"`);
+          }
+
+          // Look for Incluir button
+          const incluirBtn = findIncluirButtonNear(card);
+          if (incluirBtn) {
+            info.push(`    🟢 Botão Incluir: <${incluirBtn.tagName}> text="${(incluirBtn.textContent || '').trim().substring(0, 40)}" visible=${incluirBtn.offsetParent !== null} aria="${incluirBtn.getAttribute('aria-label') || ''}"`);
+          } else {
+            info.push(`    🔴 Botão Incluir: NÃO ENCONTRADO`);
+          }
+        }
+
+        // Check for @Name in character cards that findCharacterCards found
+        if (cardMap.size > 0) {
+          info.push('\n── [PROFUNDO] HOVER + INCLUIR TEST ──');
+          for (const [name, card] of cardMap) {
+            info.push(`  @${name}: hovering...`);
+            try {
+              await hoverOverImageCard(card);
+              const img = card.querySelector('img');
+              if (img) await hoverOverImageCard(img);
+              await sleep(600);
+
+              const btn = findIncluirButtonNear(card);
+              if (btn) {
+                info.push(`    🟢 Botão encontrado APÓS hover: <${btn.tagName}> text="${(btn.textContent || '').trim().substring(0, 40)}" visible=${btn.offsetParent !== null}`);
+              } else {
+                // Scan more broadly - any new buttons that appeared?
+                const allBtns = card.querySelectorAll('button, [role="button"]');
+                info.push(`    🔴 Botão NÃO encontrado após hover. Botões dentro do card: ${allBtns.length}`);
+                allBtns.forEach((b, bi) => {
+                  info.push(`      [${bi}] <${b.tagName}> text="${(b.textContent || '').trim().substring(0, 40)}" visible=${b.offsetParent !== null} aria="${b.getAttribute('aria-label') || ''}"`);
+                });
+
+                // Check parent too
+                if (card.parentElement) {
+                  const parentBtns = card.parentElement.querySelectorAll('button, [role="button"]');
+                  info.push(`    Botões no parent: ${parentBtns.length}`);
+                  parentBtns.forEach((b, bi) => {
+                    if (b.closest('#veo3-panel')) return;
+                    info.push(`      [${bi}] <${b.tagName}> text="${(b.textContent || '').trim().substring(0, 40)}" visible=${b.offsetParent !== null} aria="${b.getAttribute('aria-label') || ''}"`);
+                  });
+                }
+              }
+
+              // Mouse leave
+              card.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }));
+            } catch (e) {
+              info.push(`    ❌ Erro no hover: ${e.message}`);
+            }
+          }
+        }
+
+        // ─── SECTION 6 (DEEP): TABS ───
+        info.push('\n── [PROFUNDO] TABS/ABAS ──');
+        const tabCandidates = document.querySelectorAll('[role="tab"], [role="tablist"] *, button[class*="tab"], a[class*="tab"]');
+        info.push(`Tab candidates: ${tabCandidates.length}`);
+        tabCandidates.forEach((tab, i) => {
+          if (tab.closest('#veo3-panel, #veo3-bubble')) return;
+          const text = (tab.textContent || '').trim();
+          const selected = tab.getAttribute('aria-selected');
+          info.push(`  [${i}] <${tab.tagName}> text="${text.substring(0, 30)}" selected=${selected || '?'} visible=${tab.offsetParent !== null}`);
+        });
+
+        // ─── SECTION 7 (DEEP): SHADOW DOM ───
+        info.push('\n── [PROFUNDO] SHADOW DOM ──');
+        let shadowCount = 0;
+        document.querySelectorAll('*').forEach(el => {
+          if (el.shadowRoot) {
+            shadowCount++;
+            const innerImgs = el.shadowRoot.querySelectorAll('img');
+            const innerBtns = el.shadowRoot.querySelectorAll('button');
+            if (innerImgs.length > 0 || innerBtns.length > 5) {
+              info.push(`  Shadow <${el.tagName}> id="${el.id}": ${innerImgs.length} img, ${innerBtns.length} btns`);
+            }
+          }
+        });
+        info.push(`  Total shadow roots: ${shadowCount}`);
+
+        // ─── SECTION 8 (DEEP): ALL BUTTONS ON PAGE ───
+        info.push('\n── [PROFUNDO] TODOS OS BOTÕES (fora do painel) ──');
+        const allPageBtns = document.querySelectorAll('button, [role="button"]');
+        let btnIdx = 0;
+        allPageBtns.forEach(btn => {
+          if (btn.closest('#veo3-panel, #veo3-bubble')) return;
+          if (btn.offsetParent === null) return;
+          const text = (btn.textContent || '').trim().substring(0, 50);
+          const aria = btn.getAttribute('aria-label') || '';
+          const title = btn.title || '';
+          const icon = btn.querySelector('i.google-symbols');
+          const iconText = icon ? (icon.textContent || '').trim() : '';
+          const rect = btn.getBoundingClientRect();
+          info.push(`  [${btnIdx++}] <${btn.tagName}> (${Math.round(rect.left)},${Math.round(rect.top)}) text="${text}" aria="${aria}" title="${title}" icon="${iconText}"`);
+        });
+        info.push(`  Total botões visíveis (fora painel): ${btnIdx}`);
+      }
+
+      // ─── SUMMARY ───
+      info.push('\n── RESUMO ──');
+      info.push(`Input: ${ces.length > 0 ? '✅' : '❌'} | Send: ${sendBtn ? '✅' : '❌'} | Imgs(≥80px): ${contentImgs} | Videos: ${allVideos.length} | @Names: ${cardMap.size}`);
+
+      const output = info.join('\n');
+      console.log(output);
+
+      // Copy to clipboard
+      navigator.clipboard.writeText(output).then(() => {
+        updateStatus(`📋 Diagnóstico ${isDeep ? 'profundo' : 'rápido'} copiado! Cole aqui no chat.`);
+      }).catch(() => {
+        // Fallback: show in prompt dialog
+        window.prompt('Copie o texto abaixo:', output);
+      });
+    } finally {
+      if (lightBtn) lightBtn.disabled = false;
+      if (deepBtn) deepBtn.disabled = false;
+    }
+  }
+
+  // ============================================================================
   // CHARACTER-BASED IMAGE SELECTION (auto-detect @Name: on page)
   // ============================================================================
 
@@ -1535,24 +1723,18 @@
     state.imageSelectionInProgress = true;
 
     try {
-      // Step 1: Switch to Images tab to find character cards
-      let switched = await switchToTab('Image') || await switchToTab('Imagens') || await switchToTab('Images');
-      if (!switched) {
-        console.log('🎭 Image tab not found — trying to detect characters on current view');
-      }
-      await sleep(600);
+      // VEO3 Flow shows images and videos on the SAME page (no separate tabs)
+      // Step 1: Auto-detect character cards by @Name: text on current page
+      console.log(`🎭 Scanning page for @Name: patterns... (looking for: ${characterNames.join(', ')})`);
 
-      // Step 2: Auto-detect character cards by @Name: text on page
       const cardMap = findCharacterCards();
 
       if (cardMap.size === 0) {
         console.warn('⚠️ No @Name: character cards found on page');
-        // Switch back to video tab
-        await switchToTab('Video') || await switchToTab('Vídeos') || await switchToTab('Videos');
         return { success: false, count: 0, error: 'Nenhum personagem @Nome encontrado na página' };
       }
 
-      // Step 3: Match requested names to found cards
+      // Step 2: Match requested names to found cards
       const matched = [];
       const notFound = [];
       for (const name of characterNames) {
@@ -1562,7 +1744,7 @@
           // Fuzzy: check if any key starts with / contains the requested name
           let found = false;
           for (const [key, card] of cardMap) {
-            if (key.startsWith(name) || name.startsWith(key)) {
+            if (key.startsWith(name) || name.startsWith(key) || key.includes(name) || name.includes(key)) {
               matched.push({ name, card });
               console.log(`🎭 Fuzzy match: "${name}" → "${key}"`);
               found = true;
@@ -1579,13 +1761,12 @@
       }
 
       if (matched.length === 0) {
-        await switchToTab('Video') || await switchToTab('Vídeos') || await switchToTab('Videos');
         return { success: false, count: 0, error: `Personagens não encontrados: ${characterNames.join(', ')}` };
       }
 
       console.log(`🎭 Selecting ${matched.length} character(s): ${matched.map(m => m.name).join(', ')}`);
 
-      // Step 4: For each matched character, hover → find include button → click
+      // Step 3: For each matched character, hover → find include button → click
       let count = 0;
       for (const { name, card } of matched) {
         for (let retry = 0; retry < CONFIG.MAX_IMAGE_SELECT_RETRIES; retry++) {
@@ -1646,17 +1827,10 @@
         }
       }
 
-      // Step 5: Switch back to Videos tab
-      await switchToTab('Video') || await switchToTab('Vídeos') || await switchToTab('Videos');
-      await sleep(500);
-
       console.log(`🎭 Character selection complete: ${count}/${matched.length} included`);
       return { success: count > 0, count, error: null };
     } catch (err) {
       console.error(`❌ selectCharacterImages error: ${err.message}`);
-      try {
-        await switchToTab('Video') || await switchToTab('Vídeos') || await switchToTab('Videos');
-      } catch (e) { /* ignore */ }
       return { success: false, count: 0, error: err.message };
     } finally {
       state.imageSelectionInProgress = false;
