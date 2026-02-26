@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Veo3 Prompt Batch Automator
 // @namespace    https://synkra.io/
-// @version      1.2.0
+// @version      1.5.0
 // @description  Automate batch video generation in Google Veo 3.1 — Send All then Download All
 // @author       j. felipe
 // @match        https://labs.google/fx/pt/tools/flow/project/*
@@ -10,7 +10,7 @@
 // @run-at       document-end
 // ==/UserScript==
 
-(function() {
+(function () {
   'use strict';
 
   // ============================================================================
@@ -43,12 +43,17 @@
   // ============================================================================
   const SELECTORS = {
     inputField: [
+      'textarea[placeholder*="O que você quer criar"]',
+      'textarea[placeholder*="What do you want to create"]',
       'textarea[placeholder*="Crie um vídeo"]',
       'textarea[placeholder*="crie um vídeo"]',
+      '#PINHOLE_TEXT_AREA_ELEMENT_ID',
       'input[placeholder*="Crie"]',
-      '[contenteditable="true"]',
+      'input[placeholder*="criar"]',
       'textarea',
-      'div[contenteditable="true"]'
+      '[contenteditable="true"][role="textbox"]',
+      'div[contenteditable="true"]',
+      '[contenteditable="true"]'
     ],
 
     sendButton: [
@@ -246,7 +251,7 @@
         padding: 12px 16px; cursor: grab; background: rgba(0,0,0,0.1);
         border-radius: 12px 12px 0 0; user-select: none;
       ">
-        <span style="font-weight: 600; font-size: 14px;">VEO3 Batch Automator</span>
+        <span style="font-weight: 600; font-size: 14px;">VEO3 Batch Automator <span style="font-size:10px;opacity:0.6">v1.3.0</span></span>
         <div style="display: flex; gap: 8px;">
           <button id="veo3-minimize-btn" style="
             background: none; border: none; color: white; cursor: pointer;
@@ -283,6 +288,9 @@
             font-size: 11px; color: rgba(255,255,255,0.7); padding-left: 24px;
             display: none;
           ">Detectando imagens...</div>
+        </div>
+        <div style="font-size: 10px; opacity: 0.6; padding: 0 2px; margin-bottom: 10px;">
+          &#128161; Use <code style="background: rgba(0,0,0,0.2); padding: 1px 4px; border-radius: 2px;">[CHARS: Bao, Tenzin]</code> no prompt para selecionar personagens espec&#237;ficos por @Nome
         </div>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
           <button id="veo3-start-btn" style="
@@ -401,6 +409,77 @@
     downloadAllBtn.addEventListener('mouseleave', () => { if (!downloadAllBtn.disabled) downloadAllBtn.style.background = '#2196F3'; });
     dlPageBtn.addEventListener('mouseenter', () => { if (!dlPageBtn.disabled) dlPageBtn.style.background = '#0097A7'; });
     dlPageBtn.addEventListener('mouseleave', () => { if (!dlPageBtn.disabled) dlPageBtn.style.background = '#00BCD4'; });
+    // DIAGNOSTIC BUTTON — shows exactly what elements VEO3 has on the page
+    const diagBtn = document.createElement('button');
+    diagBtn.textContent = '🔍 Diagnóstico DOM';
+    diagBtn.style.cssText = 'padding:6px 10px;background:#FF9800;color:white;border:none;border-radius:4px;cursor:pointer;font-size:11px;margin-top:6px;width:100%';
+    diagBtn.addEventListener('click', () => {
+      const info = [];
+      info.push('=== VEO3 DOM DIAGNOSTIC ===');
+
+      // All textareas
+      const tas = document.querySelectorAll('textarea');
+      info.push(`\nTEXTAREAS (${tas.length}):`);
+      tas.forEach((ta, i) => {
+        const inPanel = ta.closest('#veo3-panel, #veo3-bubble') ? ' [OUR PANEL]' : '';
+        const rkeys = Object.keys(ta).filter(k => k.startsWith('__react')).join(',');
+        info.push(`  [${i}] id="${ta.id}" placeholder="${(ta.placeholder || '').substring(0, 50)}" visible=${ta.offsetParent !== null} rows=${ta.rows} value="${(ta.value || '').substring(0, 20)}" react=[${rkeys}]${inPanel}`);
+      });
+
+      // All contenteditables
+      const ces = document.querySelectorAll('[contenteditable="true"]');
+      info.push(`\nCONTENTEDITABLES (${ces.length}):`);
+      ces.forEach((ce, i) => {
+        const inPanel = ce.closest('#veo3-panel, #veo3-bubble') ? ' [OUR PANEL]' : '';
+        const rkeys = Object.keys(ce).filter(k => k.startsWith('__react')).join(',');
+        info.push(`  [${i}] <${ce.tagName}> id="${ce.id}" role="${ce.getAttribute('role')}" visible=${ce.offsetParent !== null} text="${(ce.textContent || '').substring(0, 20)}" react=[${rkeys}]${inPanel}`);
+      });
+
+      // Shadow DOM search
+      info.push(`\nSHADOW DOM SEARCH:`);
+      let shadowCount = 0;
+      document.querySelectorAll('*').forEach(el => {
+        if (el.shadowRoot) {
+          shadowCount++;
+          const innerTAs = el.shadowRoot.querySelectorAll('textarea');
+          const innerCEs = el.shadowRoot.querySelectorAll('[contenteditable="true"]');
+          if (innerTAs.length > 0 || innerCEs.length > 0) {
+            info.push(`  Shadow in <${el.tagName}> id="${el.id}": ${innerTAs.length} textarea(s), ${innerCEs.length} contenteditable(s)`);
+          }
+        }
+      });
+      info.push(`  Total shadow roots found: ${shadowCount}`);
+
+      // All inputs
+      const inputs = document.querySelectorAll('input');
+      info.push(`\nINPUTS (${inputs.length}):`);
+      inputs.forEach((inp, i) => {
+        if (inp.closest('#veo3-panel, #veo3-bubble')) return;
+        info.push(`  [${i}] type="${inp.type}" id="${inp.id}" name="${inp.name}" placeholder="${(inp.placeholder || '').substring(0, 40)}" visible=${inp.offsetParent !== null}`);
+      });
+
+      // Forms
+      const forms = document.querySelectorAll('form');
+      info.push(`\nFORMS (${forms.length}):`);
+      forms.forEach((f, i) => {
+        info.push(`  [${i}] id="${f.id}" action="${f.action}" method="${f.method}" elements=${f.elements.length}`);
+      });
+
+      const output = info.join('\n');
+      console.log(output);
+
+      // Also copy to clipboard
+      navigator.clipboard.writeText(output).then(() => {
+        updateStatus('📋 Diagnóstico copiado! Cole aqui no chat.');
+      }).catch(() => {
+        // Show in alert if clipboard fails
+        prompt('Copie o texto abaixo:', output);
+      });
+    });
+    // Insert diagnostic button before the status display
+    const statusDisplay = document.getElementById('veo3-status-display');
+    statusDisplay.parentElement.insertBefore(diagBtn, statusDisplay);
+
     scanPageBtn.addEventListener('mouseenter', () => { scanPageBtn.style.background = '#607D8B'; });
     scanPageBtn.addEventListener('mouseleave', () => { scanPageBtn.style.background = '#78909C'; });
     pauseBtn.addEventListener('mouseenter', () => { pauseBtn.style.background = '#e68900'; });
@@ -553,6 +632,113 @@
       .filter(p => p.length > 0);
   }
 
+  // Extracts [CHARS: Name1, Name2] from prompt, returns clean prompt + character list
+  // Supports: [CHARS: ...], [CHAR: ...], [chars: ...] — anywhere in the prompt
+  function parseCharsFromPrompt(promptText) {
+    const match = promptText.match(/\[CHARS?:\s*([^\]]+)\]\s*\n?/i);
+    if (!match) {
+      return { cleanPrompt: promptText, characters: [] };
+    }
+    const characters = match[1]
+      .split(',')
+      .map(c => c.trim().toLowerCase())
+      .filter(c => c.length > 0);
+    const cleanPrompt = promptText.replace(match[0], '').replace(/\n{2,}/g, '\n').trim();
+    return { cleanPrompt, characters };
+  }
+
+  // Scans page for elements with @Name: text pattern near image cards
+  // Returns Map<lowercase_name, HTMLElement> — the card/container element for each character
+  function findCharacterCards() {
+    const nameToCard = new Map();
+
+    function isOurs(el) {
+      return el.closest('#veo3-panel, #veo3-bubble');
+    }
+
+    // Strategy 1: Walk all text nodes looking for @Name: pattern
+    // VEO3 shows character descriptions like "@Bao: Majestic Bombay black cat..."
+    const walker = document.createTreeWalker(
+      document.body,
+      NodeFilter.SHOW_TEXT,
+      {
+        acceptNode(node) {
+          if (!node.textContent || !node.textContent.includes('@')) return NodeFilter.FILTER_REJECT;
+          const parent = node.parentElement;
+          if (!parent || isOurs(parent)) return NodeFilter.FILTER_REJECT;
+          if (parent.offsetParent === null && parent.style.display !== 'contents') return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
+        }
+      }
+    );
+
+    const atNamePattern = /@(\w[\w\s-]*?):/g;
+    let textNode;
+    while ((textNode = walker.nextNode())) {
+      const text = textNode.textContent;
+      let match;
+      atNamePattern.lastIndex = 0;
+      while ((match = atNamePattern.exec(text))) {
+        const name = match[1].trim().toLowerCase();
+        if (name.length === 0 || name.length > 30) continue;
+
+        // Find the nearest card/image container by walking up from the text node
+        const el = textNode.parentElement;
+        let card = null;
+
+        let current = el;
+        for (let depth = 0; depth < 8 && current; depth++) {
+          const hasImg = current.querySelector('img') || current.querySelector('[role="img"]');
+          const hasBg = current.style.backgroundImage && current.style.backgroundImage !== 'none';
+          const rect = current.getBoundingClientRect();
+          const isCardSized = rect.width >= 80 && rect.height >= 80;
+
+          if ((hasImg || hasBg) && isCardSized) {
+            card = current;
+            break;
+          }
+
+          if (current.matches('[role="listitem"], [role="option"], [class*="card"], [class*="item"]') && isCardSized) {
+            card = current;
+            break;
+          }
+
+          current = current.parentElement;
+        }
+
+        if (!card) {
+          card = el.closest('[class*="card"], [class*="item"], [class*="asset"]') || el;
+        }
+
+        if (!nameToCard.has(name)) {
+          nameToCard.set(name, card);
+          console.log(`🎭 Found character card: @${name} → ${card.tagName}.${(card.className || '').toString().substring(0, 40)}`);
+        }
+      }
+    }
+
+    // Strategy 2: Also check aria-label and title attributes on images
+    const allImgs = document.querySelectorAll('img:not(#veo3-panel img):not(#veo3-bubble img)');
+    for (const img of allImgs) {
+      if (isOurs(img)) continue;
+      const alt = (img.alt || '') + ' ' + (img.title || '') + ' ' + (img.getAttribute('aria-label') || '');
+      let match;
+      atNamePattern.lastIndex = 0;
+      while ((match = atNamePattern.exec(alt))) {
+        const name = match[1].trim().toLowerCase();
+        if (name.length === 0 || name.length > 30) continue;
+        if (!nameToCard.has(name)) {
+          const card = img.closest('[class*="card"], [class*="item"], [role="listitem"]') || img.parentElement || img;
+          nameToCard.set(name, card);
+          console.log(`🎭 Found character (img attr): @${name} → ${card.tagName}`);
+        }
+      }
+    }
+
+    console.log(`🎭 findCharacterCards: found ${nameToCard.size} character(s): ${[...nameToCard.keys()].join(', ')}`);
+    return nameToCard;
+  }
+
   async function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
@@ -611,6 +797,38 @@
     if (waited > 0) {
       updateStatus('✅ Vaga na fila disponível!');
       await sleep(2000);
+    }
+  }
+
+  // Count active generations on VEO3 page (progress bars, spinners, loading indicators)
+  function countActiveGenerations() {
+    let count = 0;
+    // Count active progress bars (not at 100%)
+    const progressBars = document.querySelectorAll('[role="progressbar"]');
+    for (const bar of progressBars) {
+      const val = parseInt(bar.getAttribute('aria-valuenow') || '0');
+      if (val > 0 && val < 100) count++;
+    }
+    // Count loading/spinner indicators
+    const spinners = document.querySelectorAll(
+      '[class*="loading"]:not([id^="veo3"]), [class*="spinner"]:not([id^="veo3"]), ' +
+      '[class*="generating"], [class*="pending"], [class*="processing"]'
+    );
+    count += spinners.length;
+    return count;
+  }
+
+  // Wait until active generations drop below maxActive
+  async function waitForActiveGenerations(maxActive) {
+    const maxWait = CONFIG.PROGRESS_TIMEOUT;
+    const startTime = Date.now();
+    while (state.isRunning && (Date.now() - startTime) < maxWait) {
+      const active = countActiveGenerations();
+      if (active <= maxActive) return;
+      if (detectQueueFull()) {
+        updateStatus(`⏳ Fila cheia — ${active} gerações ativas...`);
+      }
+      await sleep(3000); // Check every 3s
     }
   }
 
@@ -673,6 +891,52 @@
     return null;
   }
 
+  // Deep querySelector that also searches inside Shadow DOM roots
+  function querySelectorDeep(selector) {
+    // 1. Try normal DOM first
+    const normal = document.querySelector(selector);
+    if (normal && !normal.closest('#veo3-panel, #veo3-bubble')) return normal;
+
+    // 2. Search inside shadow roots
+    function searchShadow(root) {
+      const els = root.querySelectorAll('*');
+      for (const el of els) {
+        if (el.shadowRoot) {
+          try {
+            const found = el.shadowRoot.querySelector(selector);
+            if (found) return found;
+            // Recurse deeper
+            const deeper = searchShadow(el.shadowRoot);
+            if (deeper) return deeper;
+          } catch (e) { /* invalid selector in shadow */ }
+        }
+      }
+      return null;
+    }
+    return searchShadow(document);
+  }
+
+  function querySelectorAllDeep(selector) {
+    const results = [];
+    // Normal DOM
+    document.querySelectorAll(selector).forEach(el => {
+      if (!el.closest('#veo3-panel, #veo3-bubble')) results.push(el);
+    });
+    // Shadow DOM
+    function searchShadow(root) {
+      root.querySelectorAll('*').forEach(el => {
+        if (el.shadowRoot) {
+          try {
+            el.shadowRoot.querySelectorAll(selector).forEach(found => results.push(found));
+            searchShadow(el.shadowRoot);
+          } catch (e) { }
+        }
+      });
+    }
+    searchShadow(document);
+    return results;
+  }
+
   function findElement(selectorList, purpose = 'unknown') {
     if (typeof selectorList === 'string') {
       selectorList = [selectorList];
@@ -694,7 +958,7 @@
         }
       }
 
-      const textarea = document.querySelector('#PINHOLE_TEXT_AREA_ELEMENT_ID, textarea[placeholder*="Crie"], textarea');
+      const textarea = document.querySelector('#PINHOLE_TEXT_AREA_ELEMENT_ID, textarea[placeholder*="O que você"], textarea[placeholder*="What do you"], textarea[placeholder*="Crie"], textarea, [contenteditable="true"][role="textbox"], div[contenteditable="true"]');
       if (textarea) {
         const parent = textarea.closest('div[class]');
         if (parent) {
@@ -724,7 +988,7 @@
         const label = (b.getAttribute('aria-label') || '').toLowerCase();
         const title = (b.title || '').toLowerCase();
         return label.includes('enviar') || title.includes('enviar') ||
-               label.includes('send') || title.includes('send');
+          label.includes('send') || title.includes('send');
       });
       if (sendBtn) return sendBtn;
 
@@ -756,8 +1020,8 @@
         const title = (b.title || '').toLowerCase();
         const text = (b.textContent || '').toLowerCase();
         return label.includes('baixa') || label.includes('download') ||
-               title.includes('baixa') || title.includes('download') ||
-               text.includes('baixar') || text.includes('download');
+          title.includes('baixa') || title.includes('download') ||
+          text.includes('baixar') || text.includes('download');
       });
       if (dlBtn) return dlBtn;
 
@@ -768,21 +1032,43 @@
     }
 
     // =========================================================================
-    // GENERIC ELEMENT DETECTION (input, progress)
+    // GENERIC ELEMENT DETECTION (input, progress) — includes Shadow DOM
     // =========================================================================
     for (const selector of selectorList) {
       try {
-        const el = document.querySelector(selector);
-        if (el && el.offsetParent !== null) {
-          return el;
+        // Try deep search (normal + shadow DOM)
+        const elements = querySelectorAllDeep(selector);
+        for (const el of elements) {
+          if (el.offsetParent === null && purpose === 'input') {
+            // For input, also accept hidden elements (React may use hidden textarea)
+            console.log(`🔍 findElement(${purpose}): matched "${selector}" → <${el.tagName.toLowerCase()}> id="${el.id || ''}" placeholder="${el.placeholder || ''}" [HIDDEN]`);
+            // Don't return hidden yet, prefer visible
+            continue;
+          }
+          if (el.offsetParent !== null) {
+            console.log(`🔍 findElement(${purpose}): matched "${selector}" → <${el.tagName.toLowerCase()}> id="${el.id || ''}" placeholder="${el.placeholder || ''}"`);
+            return el;
+          }
+        }
+        // If only hidden ones found for input purpose, return first hidden
+        if (purpose === 'input' && elements.length > 0) {
+          console.log(`🔍 findElement(${purpose}): returning hidden element "${selector}" → <${elements[0].tagName.toLowerCase()}>`);
+          return elements[0];
         }
       } catch (e) { /* selector may be invalid */ }
     }
 
     if (purpose === 'input') {
-      const textareas = Array.from(document.querySelectorAll('textarea'));
-      const input = textareas.find(ta => ta.placeholder?.includes('vídeo') || ta.placeholder?.includes('Vídeo'));
+      // Deep search for any textarea
+      const textareas = querySelectorAllDeep('textarea');
+      const input = textareas.find(ta => {
+        return ta.placeholder?.includes('vídeo') || ta.placeholder?.includes('Vídeo') ||
+          ta.placeholder?.includes('criar') || ta.placeholder?.includes('create') ||
+          ta.placeholder?.includes('O que');
+      });
       if (input) return input;
+      // Return first non-panel textarea
+      if (textareas.length > 0) return textareas[0];
     }
 
     if (purpose !== 'download') {
@@ -871,8 +1157,8 @@
 
     // Check if already active
     const isActive = tab.getAttribute('aria-selected') === 'true' ||
-                     tab.classList.contains('active') ||
-                     tab.classList.contains('selected');
+      tab.classList.contains('active') ||
+      tab.classList.contains('selected');
     if (isActive) {
       console.log(`📑 Tab "${tabName}" already active`);
       return true;
@@ -1034,13 +1320,13 @@
     return null;
   }
 
-  // Detect how many images are available on the "Imagens" tab
+  // Detect how many images are available on the "Image"/"Imagens" tab
   async function detectImagesOnPage() {
     try {
-      // Switch to Images tab
-      const switched = await switchToTab('Imagens');
+      // Switch to Images tab — try English first (2026 VEO3 UI), then Portuguese
+      const switched = await switchToTab('Image') || await switchToTab('Imagens') || await switchToTab('Images');
       if (!switched) {
-        await switchToTab('Images');
+        console.warn('⚠️ Could not find Image tab');
       }
       await sleep(800);
 
@@ -1049,11 +1335,8 @@
 
       console.log(`🖼️ Detected ${count} image(s) on page`);
 
-      // Switch back to Videos tab
-      const switchedBack = await switchToTab('Vídeos');
-      if (!switchedBack) {
-        await switchToTab('Videos');
-      }
+      // Switch back to Videos tab — try English first, then Portuguese
+      await switchToTab('Video') || await switchToTab('Vídeos') || await switchToTab('Videos');
 
       return count;
     } catch (err) {
@@ -1128,21 +1411,22 @@
     state.imageSelectionInProgress = true;
 
     try {
-      // Step 1: Switch to Images tab
-      let switched = await switchToTab('Imagens');
+      // Step 1: Switch to Images tab — try English first (2026 VEO3 UI), then Portuguese
+      let switched = await switchToTab('Image') || await switchToTab('Imagens') || await switchToTab('Images');
       if (!switched) {
-        switched = await switchToTab('Images');
-      }
-      if (!switched) {
-        return { success: false, count: 0, error: 'Aba Imagens não encontrada' };
+        // VEO3 may auto-include images now (no tab needed). Continue gracefully.
+        console.log('🖼️ Image tab not found — VEO3 may auto-include images as Ingredients');
+        return { success: true, count: 0, error: null };
       }
       await sleep(600);
 
       // Step 2: Find image cards (the containers with generated images)
       const imageCards = findImageCards();
       if (imageCards.length === 0) {
-        await switchToTab('Vídeos') || await switchToTab('Videos');
-        return { success: false, count: 0, error: 'Nenhum card de imagem encontrado na aba Imagens' };
+        await switchToTab('Video') || await switchToTab('Vídeos') || await switchToTab('Videos');
+        // Not an error — VEO3 may auto-include, or no images generated yet
+        console.log('🖼️ No image cards found — VEO3 may auto-include images');
+        return { success: true, count: 0, error: null };
       }
 
       // Step 3: For EACH card: hover → find "Incluir" button → click
@@ -1212,11 +1496,8 @@
         }
       }
 
-      // Step 4: Switch back to Videos tab
-      const switchedBack = await switchToTab('Vídeos');
-      if (!switchedBack) {
-        await switchToTab('Videos');
-      }
+      // Step 4: Switch back to Videos tab — try English first, then Portuguese
+      await switchToTab('Video') || await switchToTab('Vídeos') || await switchToTab('Videos');
       await sleep(500);
 
       // Step 5: Verify images appear in prompt area (circular thumbnails)
@@ -1232,7 +1513,149 @@
     } catch (err) {
       console.error(`❌ selectAllImages error: ${err.message}`);
       try {
-        await switchToTab('Vídeos') || await switchToTab('Videos');
+        await switchToTab('Video') || await switchToTab('Vídeos') || await switchToTab('Videos');
+      } catch (e) { /* ignore */ }
+      return { success: false, count: 0, error: err.message };
+    } finally {
+      state.imageSelectionInProgress = false;
+    }
+  }
+
+  // ============================================================================
+  // CHARACTER-BASED IMAGE SELECTION (auto-detect @Name: on page)
+  // ============================================================================
+
+  // Selects specific character images by auto-detecting @Name: text on page
+  // characterNames: array of lowercase names from [CHARS:] directive
+  // Reuses existing helpers: hoverOverImageCard, findIncluirButtonNear, clickIncluirButton
+  async function selectCharacterImages(characterNames) {
+    if (state.imageSelectionInProgress) {
+      return { success: false, count: 0, error: 'Seleção já em andamento' };
+    }
+    state.imageSelectionInProgress = true;
+
+    try {
+      // Step 1: Switch to Images tab to find character cards
+      let switched = await switchToTab('Image') || await switchToTab('Imagens') || await switchToTab('Images');
+      if (!switched) {
+        console.log('🎭 Image tab not found — trying to detect characters on current view');
+      }
+      await sleep(600);
+
+      // Step 2: Auto-detect character cards by @Name: text on page
+      const cardMap = findCharacterCards();
+
+      if (cardMap.size === 0) {
+        console.warn('⚠️ No @Name: character cards found on page');
+        // Switch back to video tab
+        await switchToTab('Video') || await switchToTab('Vídeos') || await switchToTab('Videos');
+        return { success: false, count: 0, error: 'Nenhum personagem @Nome encontrado na página' };
+      }
+
+      // Step 3: Match requested names to found cards
+      const matched = [];
+      const notFound = [];
+      for (const name of characterNames) {
+        if (cardMap.has(name)) {
+          matched.push({ name, card: cardMap.get(name) });
+        } else {
+          // Fuzzy: check if any key starts with / contains the requested name
+          let found = false;
+          for (const [key, card] of cardMap) {
+            if (key.startsWith(name) || name.startsWith(key)) {
+              matched.push({ name, card });
+              console.log(`🎭 Fuzzy match: "${name}" → "${key}"`);
+              found = true;
+              break;
+            }
+          }
+          if (!found) notFound.push(name);
+        }
+      }
+
+      if (notFound.length > 0) {
+        console.warn(`⚠️ Characters not found on page: ${notFound.join(', ')}`);
+        updateStatus(`⚠️ Não encontrado(s): ${notFound.join(', ')}`);
+      }
+
+      if (matched.length === 0) {
+        await switchToTab('Video') || await switchToTab('Vídeos') || await switchToTab('Videos');
+        return { success: false, count: 0, error: `Personagens não encontrados: ${characterNames.join(', ')}` };
+      }
+
+      console.log(`🎭 Selecting ${matched.length} character(s): ${matched.map(m => m.name).join(', ')}`);
+
+      // Step 4: For each matched character, hover → find include button → click
+      let count = 0;
+      for (const { name, card } of matched) {
+        for (let retry = 0; retry < CONFIG.MAX_IMAGE_SELECT_RETRIES; retry++) {
+          try {
+            // Scroll card into view
+            card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            await sleep(300);
+
+            // Hover to reveal overlay controls (reuse existing helper)
+            await hoverOverImageCard(card);
+            const img = card.querySelector('img');
+            if (img) await hoverOverImageCard(img);
+            await sleep(500);
+
+            // Find "Incluir no comando" button near this card (reuse existing helper)
+            let incluirBtn = findIncluirButtonNear(card);
+
+            if (!incluirBtn) {
+              console.log(`🎭 @${name}: no button after hover — re-hovering...`);
+              const cardRect = card.getBoundingClientRect();
+              for (let mx = 0; mx < 3; mx++) {
+                const x = cardRect.left + (cardRect.width * (mx + 1)) / 4;
+                const y = cardRect.top + cardRect.height / 2;
+                card.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: x, clientY: y }));
+                await sleep(150);
+              }
+              await sleep(500);
+              incluirBtn = findIncluirButtonNear(card);
+            }
+
+            if (!incluirBtn) {
+              console.warn(`🎭 @${name}: "Incluir" button NOT found (retry ${retry + 1})`);
+              if (retry < CONFIG.MAX_IMAGE_SELECT_RETRIES - 1) {
+                document.body.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 0, clientY: 0 }));
+                await sleep(300);
+                continue;
+              }
+              break;
+            }
+
+            // Click (reuse existing multi-strategy helper)
+            console.log(`🎭 @${name}: clicking "Incluir" button...`);
+            const confirmed = await clickIncluirButton(incluirBtn);
+
+            if (confirmed) {
+              console.log(`🎭 ✅ @${name} — click confirmed!`);
+            } else {
+              console.log(`🎭 ⚠️ @${name} — click sent but no state change`);
+            }
+
+            count++;
+            await sleep(CONFIG.IMAGE_SELECT_DELAY);
+            break; // success, move to next character
+          } catch (err) {
+            console.warn(`⚠️ @${name} retry ${retry + 1}: ${err.message}`);
+            await sleep(500);
+          }
+        }
+      }
+
+      // Step 5: Switch back to Videos tab
+      await switchToTab('Video') || await switchToTab('Vídeos') || await switchToTab('Videos');
+      await sleep(500);
+
+      console.log(`🎭 Character selection complete: ${count}/${matched.length} included`);
+      return { success: count > 0, count, error: null };
+    } catch (err) {
+      console.error(`❌ selectCharacterImages error: ${err.message}`);
+      try {
+        await switchToTab('Video') || await switchToTab('Vídeos') || await switchToTab('Videos');
       } catch (e) { /* ignore */ }
       return { success: false, count: 0, error: err.message };
     } finally {
@@ -1243,71 +1666,313 @@
   // ============================================================================
   // CORE AUTOMATION LOGIC
   // ============================================================================
+  // Get ORIGINAL native setter via hidden iframe (bypasses any prototype patching)
+  let _cachedTextareaSetter = null;
+  function getOriginalNativeSetter() {
+    if (_cachedTextareaSetter) return _cachedTextareaSetter;
+    try {
+      const iframe = document.createElement('iframe');
+      iframe.style.display = 'none';
+      document.body.appendChild(iframe);
+      _cachedTextareaSetter = Object.getOwnPropertyDescriptor(
+        iframe.contentWindow.HTMLTextAreaElement.prototype, 'value'
+      )?.set;
+      document.body.removeChild(iframe);
+    } catch (e) {
+      console.warn(`⚠️ iframe setter trick failed: ${e.message}`);
+    }
+    return _cachedTextareaSetter;
+  }
+
+  // ============================================================================
+  // FETCH + XHR INTERCEPTOR — Fixes "Prompt must be provided" error
+  // VEO3 React ignores DOM changes; we intercept ALL API calls and inject prompt
+  // ============================================================================
+  let _pendingPrompt = null;
+  let _fetchInterceptorInstalled = false;
+
+  function deepInjectPrompt(obj, prompt) {
+    if (!obj || typeof obj !== 'object') return false;
+    let injected = false;
+    const promptKeys = ['prompt', 'text', 'input', 'query', 'message', 'content', 'userInput',
+                        'promptText', 'user_input', 'request_text', 'textInput'];
+    for (const key of promptKeys) {
+      if (key in obj && (obj[key] === '' || obj[key] === null || obj[key] === undefined ||
+          (typeof obj[key] === 'string' && obj[key].trim().length === 0))) {
+        obj[key] = prompt;
+        injected = true;
+        console.log(`🎯 Interceptor: injected prompt into "${key}"`);
+      }
+    }
+    for (const key of Object.keys(obj)) {
+      if (typeof obj[key] === 'object' && obj[key] !== null) {
+        if (deepInjectPrompt(obj[key], prompt)) injected = true;
+      }
+    }
+    return injected;
+  }
+
+  function installFetchInterceptor() {
+    if (_fetchInterceptorInstalled) return;
+    _fetchInterceptorInstalled = true;
+
+    // --- Intercept fetch() ---
+    const originalFetch = window.fetch;
+    window.fetch = async function (url, options) {
+      if (_pendingPrompt && options?.method?.toUpperCase() === 'POST' && options.body) {
+        const urlStr = typeof url === 'string' ? url : (url?.url || '');
+        // Intercept ANY POST with JSON body from labs.google domain
+        try {
+          const bodyStr = typeof options.body === 'string'
+            ? options.body
+            : await new Response(options.body).text();
+          if (bodyStr.startsWith('{') || bodyStr.startsWith('[')) {
+            const body = JSON.parse(bodyStr);
+            const modified = deepInjectPrompt(body, _pendingPrompt);
+            if (modified) {
+              options = { ...options, body: JSON.stringify(body) };
+              console.log(`🎯 Fetch interceptor: prompt injected → ${urlStr.substring(0, 80)}`);
+              _pendingPrompt = null;
+            }
+          }
+        } catch (e) { /* not JSON, skip */ }
+      }
+      return originalFetch.call(this, url, options);
+    };
+
+    // --- Intercept XMLHttpRequest ---
+    const origXHROpen = XMLHttpRequest.prototype.open;
+    const origXHRSend = XMLHttpRequest.prototype.send;
+
+    XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+      this._veo3Method = method;
+      this._veo3Url = url;
+      return origXHROpen.call(this, method, url, ...rest);
+    };
+
+    XMLHttpRequest.prototype.send = function (body) {
+      if (_pendingPrompt && this._veo3Method?.toUpperCase() === 'POST' && body) {
+        try {
+          const bodyStr = typeof body === 'string' ? body : null;
+          if (bodyStr && (bodyStr.startsWith('{') || bodyStr.startsWith('['))) {
+            const parsed = JSON.parse(bodyStr);
+            const modified = deepInjectPrompt(parsed, _pendingPrompt);
+            if (modified) {
+              body = JSON.stringify(parsed);
+              console.log(`🎯 XHR interceptor: prompt injected → ${(this._veo3Url || '').substring(0, 80)}`);
+              _pendingPrompt = null;
+            }
+          }
+        } catch (e) { /* not JSON, skip */ }
+      }
+      return origXHRSend.call(this, body);
+    };
+
+    console.log('🎯 Fetch + XHR interceptors installed — will inject prompts into ALL POST requests');
+  }
+
   async function injectPrompt(prompt) {
-    const inputField = findElement(SELECTORS.inputField, 'input');
-    if (!inputField) {
-      throw new Error('Input field not found.');
+    // =========================================================================
+    // STEP 0: Install fetch interceptor & store prompt for API injection
+    // This is the REAL fix — React ignores DOM changes, so we intercept fetch
+    // =========================================================================
+    installFetchInterceptor();
+    _pendingPrompt = prompt;
+
+    // =========================================================================
+    // VEO3 uses a contenteditable DIV with role="textbox" — NOT a textarea!
+    // The DOM manipulation below is COSMETIC (shows text to user)
+    // The REAL prompt goes via fetch interceptor above
+    // =========================================================================
+    const veoInput = document.querySelector('div[contenteditable="true"][role="textbox"]')
+      || document.querySelector('[contenteditable="true"][role="textbox"]')
+      || querySelectorDeep('[contenteditable="true"][role="textbox"]');
+
+    if (!veoInput) {
+      throw new Error('VEO3 input (contenteditable div[role=textbox]) not found.');
     }
 
-    // Human-like: focus with micro-delay
-    inputField.focus();
-    await microDelay();
-    inputField.click();
-    await microDelay();
+    // Log ALL React event handlers on this element
+    const propsKey = Object.keys(veoInput).find(k => k.startsWith('__reactProps$'));
+    const reactProps = propsKey ? veoInput[propsKey] : {};
+    const handlers = Object.keys(reactProps).filter(k => k.startsWith('on'));
+    console.log(`📝 VEO3 input: <${veoInput.tagName}> handlers=[${handlers.join(', ')}]`);
+    console.log(`📝 VEO3 input innerHTML BEFORE: "${veoInput.innerHTML.substring(0, 80)}"`);
+    console.log(`📝 VEO3 input children: ${veoInput.childNodes.length} nodes, firstChild type=${veoInput.firstChild?.nodeType} text="${(veoInput.firstChild?.textContent || '').substring(0, 30)}"`);
 
-    // unsafeWindow needed in sandbox mode (GM_download grant)
-    const win = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-      win.HTMLTextAreaElement.prototype, 'value'
-    )?.set || Object.getOwnPropertyDescriptor(
-      win.HTMLInputElement.prototype, 'value'
-    )?.set;
+    // ─── STEP 1: Focus + Click to activate editing mode ───
+    veoInput.focus();
+    await sleep(150);
+    const rect = veoInput.getBoundingClientRect();
+    veoInput.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: rect.left + 10, clientY: rect.top + 10 }));
+    await sleep(30);
+    veoInput.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: rect.left + 10, clientY: rect.top + 10 }));
+    await sleep(50);
+    veoInput.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: rect.left + 10, clientY: rect.top + 10 }));
+    veoInput.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: rect.left + 10, clientY: rect.top + 10 }));
+    veoInput.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: rect.left + 10, clientY: rect.top + 10 }));
+    veoInput.focus();
+    await sleep(300); // Wait for placeholder to dismiss
 
-    // Clear field first
-    if (nativeInputValueSetter) {
-      nativeInputValueSetter.call(inputField, '');
-      inputField.dispatchEvent(new Event('input', { bubbles: true }));
-      await microDelay();
+    console.log(`📝 After focus/click innerHTML: "${veoInput.innerHTML.substring(0, 80)}"`);
+
+    // Typing delay
+    const typingTime = Math.max(300, Math.min(2000, prompt.length * CONFIG.TYPING_DELAY_PER_CHAR));
+    await sleep(typingTime);
+
+    // ─── STEP 2: Try execCommand('insertText') first (trusted events) ───
+    // Select all existing content
+    veoInput.focus();
+    document.execCommand('selectAll', false, null);
+    document.execCommand('delete', false, null);
+    await sleep(50);
+
+    const execResult = document.execCommand('insertText', false, prompt);
+    await sleep(100);
+
+    const afterExec = (veoInput.textContent || '').trim();
+    console.log(`📝 execCommand result=${execResult}, textContent="${afterExec.substring(0, 50)}" (${afterExec.length} chars)`);
+
+    // ─── STEP 3: If execCommand failed, set content directly ───
+    if (!afterExec || afterExec.length < 5 || !afterExec.includes(prompt.substring(0, 10))) {
+      console.log(`📝 execCommand failed, setting content directly...`);
+
+      // Clear everything
+      while (veoInput.firstChild) {
+        veoInput.removeChild(veoInput.firstChild);
+      }
+
+      // Insert as text node
+      const textNode = document.createTextNode(prompt);
+      veoInput.appendChild(textNode);
+
+      // Position cursor at end
+      const sel = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(veoInput);
+      range.collapse(false); // collapse to end
+      sel.removeAllRanges();
+      sel.addRange(range);
+
+      console.log(`📝 Direct set: textContent="${(veoInput.textContent || '').substring(0, 50)}" (${(veoInput.textContent || '').length} chars)`);
+    }
+    await sleep(50);
+
+    // ─── STEP 4: Fire ALL possible events to notify React ───
+    // beforeinput
+    veoInput.dispatchEvent(new InputEvent('beforeinput', {
+      bubbles: true, cancelable: true, inputType: 'insertText', data: prompt
+    }));
+    // input (this is what React typically listens to for contenteditable)
+    veoInput.dispatchEvent(new InputEvent('input', {
+      bubbles: true, cancelable: false, inputType: 'insertText', data: prompt
+    }));
+    // change
+    veoInput.dispatchEvent(new Event('change', { bubbles: true }));
+    // keyup (some frameworks check for this)
+    veoInput.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'a' }));
+    await sleep(100);
+
+    // ─── STEP 5: Call React handlers directly with REAL DOM element ───
+    if (propsKey) {
+      const props = veoInput[propsKey];
+      console.log(`📝 Calling React handlers...`);
+      try {
+        // Try EVERY handler that might be related
+        for (const handlerName of handlers) {
+          if (['onInput', 'onChange', 'onKeyUp', 'onKeyDown', 'onBeforeInput', 'onCompositionEnd'].includes(handlerName)) {
+            try {
+              props[handlerName]({ target: veoInput, currentTarget: veoInput, type: handlerName.substring(2).toLowerCase(), preventDefault: () => { }, stopPropagation: () => { }, nativeEvent: { inputType: 'insertText', data: prompt } });
+              console.log(`  ✅ Called ${handlerName}`);
+            } catch (e) {
+              console.warn(`  ❌ ${handlerName}: ${e.message}`);
+            }
+          }
+        }
+      } catch (e) {
+        console.warn(`  ⚠️ React handler calls failed: ${e.message}`);
+      }
     }
 
-    // Simulate typing delay proportional to prompt length
-    const typingTime = prompt.length * CONFIG.TYPING_DELAY_PER_CHAR
-                     + (Math.random() - 0.5) * 2 * prompt.length * CONFIG.TYPING_DELAY_JITTER;
-    const clampedTypingTime = Math.max(300, Math.min(3000, typingTime));
-    console.log(`⌨️ Simulating typing: ${prompt.length} chars in ${(clampedTypingTime / 1000).toFixed(1)}s`);
-    await sleep(clampedTypingTime);
+    // ─── STEP 6: Walk fiber tree for parent handlers ───
+    try {
+      const fiberKey = Object.keys(veoInput).find(k => k.startsWith('__reactFiber$'));
+      if (fiberKey) {
+        let fiber = veoInput[fiberKey];
+        for (let d = 0; d < 30 && fiber; d++) {
+          const mp = fiber.memoizedProps;
+          if (mp) {
+            if (mp.onInput) { try { mp.onInput({ target: veoInput }); console.log(`  ✅ Fiber onInput d=${d}`); } catch (e) { } }
+            if (mp.onChange) { try { mp.onChange({ target: veoInput }); console.log(`  ✅ Fiber onChange d=${d}`); } catch (e) { } }
+          }
+          fiber = fiber.return;
+        }
+      }
+    } catch (e) { /* skip */ }
 
-    // Set full value (React-compatible)
-    if (nativeInputValueSetter) {
-      nativeInputValueSetter.call(inputField, prompt);
-    } else {
-      inputField.value = prompt;
-    }
-
-    inputField.dispatchEvent(new Event('input', { bubbles: true }));
-    await microDelay();
-    inputField.dispatchEvent(new Event('change', { bubbles: true }));
-    await microDelay();
-
-    if (inputField.value !== prompt) {
-      console.warn(`⚠️ Injection mismatch: expected ${prompt.length} chars, got ${inputField.value.length}`);
-    }
-
+    console.log(`📝 FINAL textContent: "${(veoInput.textContent || '').substring(0, 50)}" (${(veoInput.textContent || '').length} chars)`);
+    await sleep(200);
     updateStatus(`✍️ Prompt injetado: "${prompt.substring(0, 40)}..."`);
   }
 
   async function clickSendButton() {
-    const sendBtn = findElement(SELECTORS.sendButton, 'send');
-    if (!sendBtn) throw new Error('Send button not found.');
-    if (sendBtn.offsetParent === null) throw new Error('Send button not visible.');
+    // NOTE: Strategy 0 (Enter key) was REMOVED — it triggered VEO3's empty-prompt
+    // validation before the fetch interceptor could inject the prompt, causing
+    // "Prompt must be provided" toasts. The fetch interceptor + button click works.
 
-    // Human-like click sequence with natural micro-delays
-    sendBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-    await sleep(40 + Math.random() * 80); // 40-120ms hold
-    sendBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
-    await sleep(10 + Math.random() * 30); // 10-40ms release-to-click
-    sendBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    // Single dispatch only — no .click() to avoid double send
+    // =========================================================================
+    // STRATEGY 1: Find and click the send button with full event sequence
+    // =========================================================================
+    const sendBtn = findElement(SELECTORS.sendButton, 'send');
+    if (!sendBtn) {
+      console.warn('⚠️ Send button not found');
+      updateStatus('⚠️ Botão de envio não encontrado');
+      return;
+    }
+    if (sendBtn.offsetParent === null) {
+      console.warn('⚠️ Send button not visible');
+    }
+
+    console.log(`🖱️ Strategy 1: Full click on send button (disabled=${sendBtn.disabled}, aria-disabled=${sendBtn.getAttribute('aria-disabled')})`);
+
+    const rect = sendBtn.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const eventOpts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0 };
+
+    // Full pointer + mouse event sequence
+    sendBtn.dispatchEvent(new PointerEvent('pointerdown', { ...eventOpts, pointerId: 1 }));
+    await sleep(30);
+    sendBtn.dispatchEvent(new MouseEvent('mousedown', eventOpts));
+    await sleep(60);
+    sendBtn.dispatchEvent(new PointerEvent('pointerup', { ...eventOpts, pointerId: 1 }));
+    await sleep(15);
+    sendBtn.dispatchEvent(new MouseEvent('mouseup', eventOpts));
+    await sleep(15);
+    sendBtn.dispatchEvent(new MouseEvent('click', eventOpts));
+    await sleep(300);
+
+    // Strategy 2: Native .click()
+    sendBtn.click();
+    await sleep(300);
+
+    // Strategy 3: Try React onClick from props
+    try {
+      const propsKey = Object.keys(sendBtn).find(k => k.startsWith('__reactProps$'));
+      if (propsKey && sendBtn[propsKey]?.onClick) {
+        console.log('🖱️ Strategy 3: React onClick direct call...');
+        sendBtn[propsKey].onClick({ preventDefault: () => { }, stopPropagation: () => { } });
+      }
+    } catch (e) {
+      console.warn(`⚠️ React onClick failed: ${e.message}`);
+    }
+
+    // Strategy 4: Find and submit the parent form
+    const form = sendBtn.closest('form');
+    if (form) {
+      console.log('🖱️ Strategy 4: Form submit...');
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    }
 
     updateStatus('🚀 Enviado para geração...');
   }
@@ -1375,10 +2040,10 @@
           // Strategy 3: NEW video element appeared (more than before) - CHECK FIRST
           const currentVideos = document.querySelectorAll('video');
           if (currentVideos.length > state.videoCountBeforeGen) {
-            // New video appeared! Mark it as the target
-            state.lastVideoElement = currentVideos[currentVideos.length - 1];
+            // New video appeared! VEO3 prepends newest at top → index 0 is the new one
+            state.lastVideoElement = currentVideos[0];
             state.lastVideoElement.setAttribute('data-veo3-batch-target', 'true');
-            console.log(`✅ NEW video detected (${currentVideos.length} total, was ${state.videoCountBeforeGen})`);
+            console.log(`✅ NEW video detected at [0] (${currentVideos.length} total, was ${state.videoCountBeforeGen})`);
             clearInterval(interval);
             resolve();
             return;
@@ -1387,12 +2052,12 @@
           // Strategy 4: Download button appeared [H2 lightweight check]
           if (hasDownloadButton()) {
             console.log('✅ Download button appeared');
-            // Also mark the newest video as target (fallback if video count didn't increase)
+            // Newest video is at index 0 (VEO3 prepends)
             const allVideos = document.querySelectorAll('video');
             if (allVideos.length > 0) {
-              state.lastVideoElement = allVideos[allVideos.length - 1];
+              state.lastVideoElement = allVideos[0];
               state.lastVideoElement.setAttribute('data-veo3-batch-target', 'true');
-              console.log(`📌 Marked newest video as target (${allVideos.length} total)`);
+              console.log(`📌 Marked newest video [0] as target (${allVideos.length} total)`);
             }
             clearInterval(interval);
             resolve();
@@ -1633,7 +2298,7 @@
 
     const timer = setTimeout(restore, 10000); // Auto-restore after 10s
 
-    window.open = function(url, target, features) {
+    window.open = function (url, target, features) {
       // Check if this is a video URL
       if (url && (url.includes('storage.googleapis.com') || url.includes('.mp4') || url.includes('videofx'))) {
         console.log(`🎯 Intercepted window.open: ${url.substring(0, 80)}`);
@@ -1673,7 +2338,8 @@
     if (!targetVideo) {
       const allVideos = document.querySelectorAll('video');
       if (allVideos.length > 0) {
-        targetVideo = allVideos[allVideos.length - 1];
+        // VEO3 prepends newest at top → index 0 is the most recent
+        targetVideo = allVideos[0];
         state.lastVideoElement = targetVideo;
       }
     }
@@ -2143,8 +2809,11 @@
     let downloaded = 0;
     let failed = 0;
 
-    for (let i = 0; i < videos.length; i++) {
-      const video = videos[i];
+    // VEO3 shows newest videos first in DOM — reverse to download in prompt order
+    const videoArray = Array.from(videos).reverse();
+
+    for (let i = 0; i < videoArray.length; i++) {
+      const video = videoArray[i];
       const num = String(i + 1).padStart(3, '0');
       const filename = useFolder ? `${num}.mp4` : `${filePrefix}${num}.mp4`;
       const url = video.currentSrc || video.src || '';
@@ -2413,11 +3082,37 @@
         updateStatus(`[${paddedNum}] Preparando...`);
 
         try {
-          // Check queue availability before sending
+          // Smart queue: count active generations (progress bars / spinners)
           await waitForQueueSlot();
+          const activeGens = countActiveGenerations();
+          if (activeGens >= CONFIG.QUEUE_BATCH_SIZE) {
+            updateStatus(`⏳ ${activeGens} gerações ativas — aguardando conclusão...`);
+            await waitForActiveGenerations(CONFIG.QUEUE_BATCH_SIZE - 1);
+            updateStatus(`✅ Vaga liberada, continuando...`);
+            await sleep(1500);
+          }
 
-          // Select reference images if enabled
-          if (state.includeImagesEnabled) {
+          // Parse [CHARS: Name1, Name2] directive from prompt if present
+          const { cleanPrompt, characters } = parseCharsFromPrompt(prompt);
+
+          if (characters.length > 0) {
+            // Selective: only include named character images (auto-detected by @Name:)
+            try {
+              updateStatus(`[${paddedNum}] 🎭 Selecionando personagens: ${characters.join(', ')}...`);
+              const charResult = await selectCharacterImages(characters);
+              if (charResult.success) {
+                updateStatus(`[${paddedNum}] ✅ ${charResult.count} personagem(ns) incluído(s)`);
+              } else {
+                updateStatus(`[${paddedNum}] ⚠️ ${charResult.error || 'Seleção parcial'}`);
+              }
+              await microDelay();
+            } catch (charErr) {
+              // Character selection is best-effort — never block prompt send
+              console.warn(`⚠️ Character selection failed: ${charErr.message}. Continuing with prompt send.`);
+              updateStatus(`[${paddedNum}] ⚠️ Seleção de personagens falhou, continuando...`);
+            }
+          } else if (state.includeImagesEnabled) {
+            // Legacy: include ALL images (existing behavior unchanged)
             updateStatus(`[${paddedNum}] 🖼️ Selecionando imagens de referência...`);
             const imageResult = await selectAllImages();
             if (!imageResult.success) {
@@ -2428,7 +3123,7 @@
             await microDelay();
           }
 
-          await injectPrompt(prompt);
+          await injectPrompt(cleanPrompt);
           await microDelay(); // Natural pause after typing
 
           await clickSendButton();
@@ -2597,11 +3292,15 @@
               targetVideo = document.querySelector(`video[data-veo3-batch-index="${entry.index}"]`);
             }
 
-            // Fallback: find by position (nth video)
+            // Fallback: find by position (VEO3 shows newest first → reverse order)
             if (!targetVideo) {
-              const allVideos = document.querySelectorAll('video');
-              if (allVideos.length >= entry.index) {
-                targetVideo = allVideos[entry.index - 1];
+              const allVideos = Array.from(document.querySelectorAll('video'));
+              const totalVideos = allVideos.length;
+              // VEO3 DOM order: [newest, ..., oldest] → reverse to [oldest, ..., newest]
+              const reversed = allVideos.slice().reverse();
+              if (reversed.length >= entry.index) {
+                targetVideo = reversed[entry.index - 1];
+                console.log(`📥 Video ${entry.index}: reversed position ${entry.index - 1} of ${totalVideos}`);
               }
             }
 
@@ -2720,7 +3419,7 @@
   // DEBUG & DIAGNOSTICS
   // ============================================================================
   function performDiagnostics() {
-    console.log('🔍 VEO3 Batch Automator v1.2.0 — Diagnostics');
+    console.log('🔍 VEO3 Batch Automator v1.3.0 — Diagnostics');
     console.log('='.repeat(50));
 
     const inputEl = findElement(SELECTORS.inputField, 'input');
@@ -2758,7 +3457,7 @@
   // INITIALIZATION
   // ============================================================================
   function init() {
-    console.log('🎬 VEO3 Batch Automator v1.2.0');
+    console.log('🎬 VEO3 Batch Automator v1.3.0');
     console.log(`📁 Downloads → ${CONFIG.DOWNLOAD_FOLDER}/001.mp4, 002.mp4, ...`);
     injectStyles();
     createFloatingBubble();
