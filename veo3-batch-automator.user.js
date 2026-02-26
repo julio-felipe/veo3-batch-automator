@@ -1687,6 +1687,251 @@
           info.push(`  [${btnIdx++}] <${btn.tagName}> (${Math.round(rect.left)},${Math.round(rect.top)}) text="${text}" aria="${aria}" title="${title}" icon="${iconText}"`);
         });
         info.push(`  Total botões visíveis (fora painel): ${btnIdx}`);
+
+        // ─── SECTION 9 (DEEP): PROMPT INPUT AREA SCAN ───
+        info.push('\n── [PROFUNDO] ÁREA DO PROMPT INPUT ──');
+        try {
+          // Find the contenteditable textbox (the main VEO3 input)
+          const veoInput = document.querySelector('div[contenteditable="true"][role="textbox"]')
+            || document.querySelector('[contenteditable="true"][role="textbox"]');
+
+          if (!veoInput) {
+            info.push('  ❌ Textbox não encontrado');
+          } else {
+            const inputRect = veoInput.getBoundingClientRect();
+            info.push(`  Textbox: (${Math.round(inputRect.left)},${Math.round(inputRect.top)}) ${Math.round(inputRect.width)}x${Math.round(inputRect.height)}`);
+
+            // Focus the input first — the "+" may only appear when focused
+            veoInput.focus();
+            veoInput.click();
+            await sleep(500);
+
+            // Scan ALL elements near the textbox (within 150px vertically)
+            const yMin = inputRect.top - 150;
+            const yMax = inputRect.bottom + 150;
+            info.push(`  Escaneando elementos entre y=${Math.round(yMin)} e y=${Math.round(yMax)}...`);
+
+            const nearbyEls = [];
+            document.querySelectorAll('*').forEach(el => {
+              if (el.closest('#veo3-panel, #veo3-bubble')) return;
+              if (el.offsetParent === null && el.style.display !== 'contents') return;
+              if (el.tagName === 'STYLE' || el.tagName === 'SCRIPT') return;
+              const r = el.getBoundingClientRect();
+              if (r.width < 10 || r.height < 10) return;
+              if (r.top < yMin || r.top > yMax) return;
+              // Only report leaf or semi-leaf elements (not giant containers)
+              if (r.width > 800 && r.height > 200) return;
+              nearbyEls.push(el);
+            });
+
+            info.push(`  Elementos perto do input: ${nearbyEls.length}`);
+            const seenPos = new Set();
+            nearbyEls.forEach((el, i) => {
+              const r = el.getBoundingClientRect();
+              const posKey = `${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)},${Math.round(r.height)}`;
+              if (seenPos.has(posKey)) return;
+              seenPos.add(posKey);
+              const text = (el.textContent || '').trim().substring(0, 50);
+              const tag = el.tagName;
+              const role = el.getAttribute('role') || '';
+              const cls = (el.className || '').toString().substring(0, 40);
+              const clickable = el.matches('button, a, [role="button"], [tabindex="0"], [tabindex="-1"], input, label') ? ' 👆' : '';
+              const icon = el.querySelector('i.google-symbols');
+              const iconText = icon ? ` icon="${(icon.textContent || '').trim()}"` : '';
+              info.push(`    <${tag}> role="${role}" cls="${cls}" (${Math.round(r.left)},${Math.round(r.top)}) ${Math.round(r.width)}x${Math.round(r.height)} "${text}"${iconText}${clickable}`);
+            });
+          }
+        } catch (e) {
+          info.push(`  ❌ Erro: ${e.message}`);
+        }
+
+        // ─── SECTION 10 (DEEP): CLICK "+" AND MAP RESOURCE PICKER POPUP ───
+        info.push('\n── [PROFUNDO] POPUP DE RECURSOS (botão "+") ──');
+        try {
+          // Find the "+" button near the prompt area.
+          // Strategy: find ALL elements that look like "+" near the input (y > 800)
+          const veoInput = document.querySelector('div[contenteditable="true"][role="textbox"]');
+          const inputY = veoInput ? veoInput.getBoundingClientRect().top : 800;
+          let addBtn = null;
+
+          // Strategy 1: button/div near input with "add" icon or "+" text
+          const candidates = document.querySelectorAll('button, [role="button"], [tabindex="0"], [tabindex="-1"]');
+          const addCandidates = [];
+          for (const el of candidates) {
+            if (el.closest('#veo3-panel, #veo3-bubble')) continue;
+            if (el.offsetParent === null) continue;
+            const rect = el.getBoundingClientRect();
+            const text = (el.textContent || '').trim();
+            const icon = el.querySelector('i.google-symbols');
+            const iconText = icon ? (icon.textContent || '').trim() : '';
+            const isAdd = iconText === 'add' || iconText === 'add_circle' || text === '+';
+            // Must be near the input area (within 200px vertically)
+            const nearInput = Math.abs(rect.top - inputY) < 200;
+            if (isAdd || nearInput) {
+              const dist = Math.abs(rect.top - inputY);
+              addCandidates.push({ el, rect, text: text.substring(0, 40), iconText, dist, isAdd });
+            }
+          }
+
+          // Sort: prefer "add" icons near input, then any "add" icon
+          addCandidates.sort((a, b) => {
+            if (a.isAdd && !b.isAdd) return -1;
+            if (!a.isAdd && b.isAdd) return 1;
+            return a.dist - b.dist;
+          });
+
+          info.push(`  Candidatos "+" encontrados: ${addCandidates.length}`);
+          addCandidates.slice(0, 8).forEach((c, i) => {
+            info.push(`    [${i}] (${Math.round(c.rect.left)},${Math.round(c.rect.top)}) ${Math.round(c.rect.width)}x${Math.round(c.rect.height)} icon="${c.iconText}" text="${c.text}" dist=${Math.round(c.dist)} isAdd=${c.isAdd}`);
+          });
+
+          // Pick: nearest "add" icon to input
+          const bestAdd = addCandidates.find(c => c.isAdd && c.dist < 200);
+          if (bestAdd) {
+            addBtn = bestAdd.el;
+            info.push(`  ✅ Usando: (${Math.round(bestAdd.rect.left)},${Math.round(bestAdd.rect.top)}) icon="${bestAdd.iconText}" text="${bestAdd.text}"`);
+          } else if (addCandidates.length > 0 && addCandidates[0].isAdd) {
+            addBtn = addCandidates[0].el;
+            info.push(`  ⚠️ Usando melhor candidato add: (${Math.round(addCandidates[0].rect.left)},${Math.round(addCandidates[0].rect.top)})`);
+          }
+
+          if (!addBtn) {
+            // Strategy 2: Look for SVG or span with "+" inside the input area
+            const inputParent = veoInput?.parentElement?.parentElement?.parentElement;
+            if (inputParent) {
+              const allEls = inputParent.querySelectorAll('*');
+              for (const el of allEls) {
+                const text = (el.textContent || '').trim();
+                if (text === '+' || text === 'add') {
+                  info.push(`  📍 Encontrado "${text}" em <${el.tagName}> cls="${(el.className || '').toString().substring(0, 40)}"`);
+                  const clickable = el.closest('button, [role="button"], [tabindex]');
+                  if (clickable) {
+                    addBtn = clickable;
+                    info.push(`  ✅ Parent clicável: <${clickable.tagName}>`);
+                  } else {
+                    addBtn = el;
+                    info.push(`  ⚠️ Usando elemento direto: <${el.tagName}>`);
+                  }
+                  break;
+                }
+              }
+            }
+          }
+
+          if (!addBtn) {
+            info.push('  ❌ Botão "+" NÃO encontrado perto do input');
+            info.push('  💡 O "+" pode aparecer apenas ao clicar/focar o input. Tente clicar no campo de texto e rodar novamente.');
+          } else {
+            info.push(`  ✅ Clicando no "+" ...`);
+            // Full event sequence
+            const r = addBtn.getBoundingClientRect();
+            const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+            addBtn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: cx, clientY: cy }));
+            await sleep(50);
+            addBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: cx, clientY: cy }));
+            await sleep(50);
+            addBtn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: cx, clientY: cy }));
+            addBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: cx, clientY: cy }));
+            addBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: cx, clientY: cy }));
+            addBtn.click();
+            await sleep(1000);
+
+            // Snapshot DOM after click — look for popup/dialog/overlay
+            const popups = document.querySelectorAll(
+              '[role="dialog"], [role="listbox"], [role="menu"], [role="presentation"]:not(iframe), ' +
+              '[class*="popup"], [class*="modal"], [class*="dropdown"], ' +
+              '[class*="picker"], [class*="resource"]'
+            );
+            info.push(`  Popups/dialogs: ${popups.length}`);
+
+            // Search for resource items (the character thumbnails with titles)
+            let resourceItems = [];
+            // Broad search: any new visible element with image + text that looks like a resource
+            const allEls = document.querySelectorAll('*');
+            for (const el of allEls) {
+              if (el.closest('#veo3-panel, #veo3-bubble')) continue;
+              if (el.offsetParent === null) continue;
+              const rect = el.getBoundingClientRect();
+              if (rect.width < 30 || rect.height < 20) continue;
+              // Must be in popup zone (above the input)
+              if (rect.top > inputY + 50) continue;
+              if (rect.top < inputY - 600) continue;
+
+              const text = (el.textContent || '').trim();
+              const hasImg = el.querySelector('img');
+              const tag = el.tagName;
+              const role = el.getAttribute('role') || '';
+              const cls = (el.className || '').toString();
+
+              // Look for items that look like resource entries
+              const isResourceItem = (
+                (hasImg && text.length > 3 && text.length < 100 && rect.height < 80) ||
+                role === 'option' || role === 'menuitem' || role === 'listitem' ||
+                (cls.includes('item') && hasImg) ||
+                (cls.includes('resource') || cls.includes('asset') || cls.includes('result'))
+              );
+              if (!isResourceItem) continue;
+
+              resourceItems.push({
+                el, text: text.substring(0, 80), tag, role,
+                cls: cls.substring(0, 50),
+                x: Math.round(rect.left), y: Math.round(rect.top),
+                w: Math.round(rect.width), h: Math.round(rect.height),
+                hasImg: hasImg ? '🖼️' : ''
+              });
+            }
+
+            // Deduplicate
+            const seenRes = new Set();
+            resourceItems = resourceItems.filter(r => {
+              const key = `${r.x},${r.y},${r.w}`;
+              if (seenRes.has(key)) return false;
+              seenRes.add(key);
+              return true;
+            });
+
+            info.push(`  Itens de recurso: ${resourceItems.length}`);
+            resourceItems.forEach((r, i) => {
+              info.push(`    [${i}] <${r.tag}> role="${r.role}" cls="${r.cls}" (${r.x},${r.y}) ${r.w}x${r.h} ${r.hasImg} "${r.text}"`);
+            });
+
+            // Dump popup DOM structure
+            for (const popup of popups) {
+              if (popup.closest('#veo3-panel')) continue;
+              if (popup.tagName === 'IFRAME') continue;
+              const pRect = popup.getBoundingClientRect();
+              if (pRect.width < 50) continue;
+              info.push(`\n  Popup DOM (<${popup.tagName}> role="${popup.getAttribute('role') || ''}" cls="${(popup.className || '').toString().substring(0, 40)}" ${Math.round(pRect.width)}x${Math.round(pRect.height)}):`);
+              const children = popup.querySelectorAll('*');
+              let ci = 0;
+              children.forEach(child => {
+                if (ci > 40) return;
+                if (child.offsetParent === null) return;
+                const cRect = child.getBoundingClientRect();
+                if (cRect.width < 10) return;
+                const text = (child.textContent || '').trim();
+                if (text.length === 0) return;
+                const tag = child.tagName;
+                const role = child.getAttribute('role') || '';
+                const cls = (child.className || '').toString().substring(0, 40);
+                const clickable = child.matches('button, a, [role="button"], [role="option"], [role="menuitem"], [tabindex]') ? ' 👆' : '';
+                const img = child.querySelector('img');
+                const imgMark = img ? ' 🖼️' : '';
+                info.push(`    <${tag}> role="${role}" cls="${cls}" (${Math.round(cRect.left)},${Math.round(cRect.top)}) ${Math.round(cRect.width)}x${Math.round(cRect.height)} "${text.substring(0, 60)}"${clickable}${imgMark}`);
+                ci++;
+              });
+            }
+
+            // Close popup
+            info.push('\n  Fechando popup (Escape)...');
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+            await sleep(300);
+            document.body.click();
+            await sleep(300);
+          }
+        } catch (popupErr) {
+          info.push(`  ❌ Erro ao testar popup: ${popupErr.message}`);
+        }
       }
 
       // ─── SUMMARY ───
@@ -1716,6 +1961,202 @@
   // Selects specific character images by auto-detecting @Name: text on page
   // characterNames: array of lowercase names from [CHARS:] directive
   // Reuses existing helpers: hoverOverImageCard, findIncluirButtonNear, clickIncluirButton
+  // Opens the ⋮ context menu on an image card and clicks "Incluir no comando"
+  // The ⋮ button may be hidden (CSS :hover only) — we force-click it via multiple strategies
+  async function includeCardViaContextMenu(card, label) {
+    // Step A: Find the ⋮ (more_vert) button — search broadly (may be hidden)
+    let moreBtn = null;
+
+    // Search inside the card and up to 2 parent levels
+    const searchRoots = [card];
+    if (card.parentElement) searchRoots.push(card.parentElement);
+    if (card.parentElement?.parentElement) searchRoots.push(card.parentElement.parentElement);
+
+    for (const root of searchRoots) {
+      const btns = root.querySelectorAll('button, [role="button"]');
+      for (const btn of btns) {
+        if (btn.closest('#veo3-panel, #veo3-bubble')) continue;
+        const icon = btn.querySelector('i.google-symbols');
+        const iconText = icon ? (icon.textContent || '').trim() : '';
+        const text = (btn.textContent || '').toLowerCase();
+        if (iconText === 'more_vert' || text.includes('mais opç') || text.includes('more')) {
+          moreBtn = btn;
+          break;
+        }
+      }
+      if (moreBtn) break;
+    }
+
+    // Strategy B: Even hidden buttons are in the DOM — search ALL descendants
+    if (!moreBtn) {
+      const allDescendants = card.querySelectorAll('i.google-symbols');
+      for (const icon of allDescendants) {
+        if ((icon.textContent || '').trim() === 'more_vert') {
+          moreBtn = icon.closest('button') || icon.parentElement;
+          break;
+        }
+      }
+    }
+
+    // Strategy C: Find by position — look for more_vert buttons at similar Y as card
+    if (!moreBtn) {
+      const cardRect = card.getBoundingClientRect();
+      const allMoreBtns = document.querySelectorAll('i.google-symbols');
+      for (const icon of allMoreBtns) {
+        if ((icon.textContent || '').trim() !== 'more_vert') continue;
+        const btn = icon.closest('button') || icon.parentElement;
+        if (!btn) continue;
+        const btnRect = btn.getBoundingClientRect();
+        // Must be within the same vertical band as the card
+        if (Math.abs(btnRect.top - cardRect.top) < cardRect.height) {
+          moreBtn = btn;
+          break;
+        }
+      }
+    }
+
+    if (!moreBtn) {
+      console.warn(`🎭 ${label}: ⋮ (more_vert) button not found`);
+      // Fallback: try right-click (contextmenu event) on the image
+      const img = card.querySelector('img, a');
+      if (img) {
+        console.log(`🎭 ${label}: trying contextmenu event on image...`);
+        const imgRect = img.getBoundingClientRect();
+        img.dispatchEvent(new MouseEvent('contextmenu', {
+          bubbles: true, cancelable: true,
+          clientX: imgRect.left + imgRect.width / 2,
+          clientY: imgRect.top + imgRect.height / 2
+        }));
+        await sleep(600);
+      } else {
+        return false;
+      }
+    } else {
+      // Force visibility and click the ⋮ button
+      console.log(`🎭 ${label}: clicking ⋮ (more_vert)... visible=${moreBtn.offsetParent !== null}`);
+
+      // Temporarily force-show the button if hidden
+      const origDisplay = moreBtn.style.display;
+      const origVisibility = moreBtn.style.visibility;
+      const origOpacity = moreBtn.style.opacity;
+      const origPointerEvents = moreBtn.style.pointerEvents;
+      moreBtn.style.setProperty('display', 'inline-flex', 'important');
+      moreBtn.style.setProperty('visibility', 'visible', 'important');
+      moreBtn.style.setProperty('opacity', '1', 'important');
+      moreBtn.style.setProperty('pointer-events', 'auto', 'important');
+
+      // Also force-show parent containers that might be hiding it
+      const hiddenAncestors = [];
+      let ancestor = moreBtn.parentElement;
+      for (let i = 0; i < 5 && ancestor && ancestor !== card; i++) {
+        if (ancestor.offsetParent === null || getComputedStyle(ancestor).opacity === '0') {
+          hiddenAncestors.push({
+            el: ancestor,
+            origDisplay: ancestor.style.display,
+            origVisibility: ancestor.style.visibility,
+            origOpacity: ancestor.style.opacity
+          });
+          ancestor.style.setProperty('display', 'flex', 'important');
+          ancestor.style.setProperty('visibility', 'visible', 'important');
+          ancestor.style.setProperty('opacity', '1', 'important');
+        }
+        ancestor = ancestor.parentElement;
+      }
+
+      await sleep(100);
+
+      // Click with full event sequence
+      const rect = moreBtn.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      moreBtn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+      await sleep(30);
+      moreBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+      await sleep(30);
+      moreBtn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+      moreBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+      moreBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+      moreBtn.click();
+      await sleep(600);
+
+      // Restore original styles
+      moreBtn.style.display = origDisplay;
+      moreBtn.style.visibility = origVisibility;
+      moreBtn.style.opacity = origOpacity;
+      moreBtn.style.pointerEvents = origPointerEvents;
+      for (const h of hiddenAncestors) {
+        h.el.style.display = h.origDisplay;
+        h.el.style.visibility = h.origVisibility;
+        h.el.style.opacity = h.origOpacity;
+      }
+    }
+
+    // Step B: Find "Incluir no comando" in the context menu that appeared
+    await sleep(200);
+    let incluirMenuItem = null;
+
+    // Search for the menu item by text
+    const menuItems = document.querySelectorAll(
+      '[role="menuitem"], [role="option"], button, [role="button"], a'
+    );
+    for (const item of menuItems) {
+      if (item.closest('#veo3-panel, #veo3-bubble')) continue;
+      const text = (item.textContent || '').toLowerCase();
+      if (text.includes('incluir no comando') || text.includes('include in prompt') ||
+          text.includes('incluir') && text.includes('comando')) {
+        incluirMenuItem = item;
+        console.log(`🎭 ${label}: found "Incluir no comando" → <${item.tagName}> text="${(item.textContent || '').trim().substring(0, 40)}"`);
+        break;
+      }
+    }
+
+    // Also try: search by "add" icon near menu items
+    if (!incluirMenuItem) {
+      const icons = document.querySelectorAll('i.google-symbols');
+      for (const icon of icons) {
+        if ((icon.textContent || '').trim() === 'add') {
+          const parent = icon.closest('button, [role="menuitem"], [role="button"], a, li, div');
+          if (parent && parent.offsetParent !== null) {
+            const text = (parent.textContent || '').toLowerCase();
+            if (text.includes('incluir') || text.includes('include')) {
+              incluirMenuItem = parent;
+              console.log(`🎭 ${label}: found "Incluir" via add icon → <${parent.tagName}>`);
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    if (!incluirMenuItem) {
+      console.warn(`🎭 ${label}: "Incluir no comando" menu item NOT found`);
+      // Close menu by pressing Escape
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+      await sleep(200);
+      return false;
+    }
+
+    // Step C: Click "Incluir no comando"
+    console.log(`🎭 ${label}: clicking "Incluir no comando"...`);
+    const miRect = incluirMenuItem.getBoundingClientRect();
+    const miCx = miRect.left + miRect.width / 2;
+    const miCy = miRect.top + miRect.height / 2;
+    incluirMenuItem.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: miCx, clientY: miCy }));
+    await sleep(30);
+    incluirMenuItem.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: miCx, clientY: miCy }));
+    await sleep(30);
+    incluirMenuItem.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: miCx, clientY: miCy }));
+    incluirMenuItem.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: miCx, clientY: miCy }));
+    incluirMenuItem.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: miCx, clientY: miCy }));
+    incluirMenuItem.click();
+
+    await sleep(500);
+    console.log(`🎭 ✅ ${label}: "Incluir no comando" clicked!`);
+    return true;
+  }
+
+  // Selects specific character images by auto-detecting @Name: text on page
+  // Uses the ⋮ context menu → "Incluir no comando" flow
   async function selectCharacterImages(characterNames) {
     if (state.imageSelectionInProgress) {
       return { success: false, count: 0, error: 'Seleção já em andamento' };
@@ -1724,7 +2165,6 @@
 
     try {
       // VEO3 Flow shows images and videos on the SAME page (no separate tabs)
-      // Step 1: Auto-detect character cards by @Name: text on current page
       console.log(`🎭 Scanning page for @Name: patterns... (looking for: ${characterNames.join(', ')})`);
 
       const cardMap = findCharacterCards();
@@ -1734,14 +2174,13 @@
         return { success: false, count: 0, error: 'Nenhum personagem @Nome encontrado na página' };
       }
 
-      // Step 2: Match requested names to found cards
+      // Match requested names to found cards (exact + fuzzy)
       const matched = [];
       const notFound = [];
       for (const name of characterNames) {
         if (cardMap.has(name)) {
           matched.push({ name, card: cardMap.get(name) });
         } else {
-          // Fuzzy: check if any key starts with / contains the requested name
           let found = false;
           for (const [key, card] of cardMap) {
             if (key.startsWith(name) || name.startsWith(key) || key.includes(name) || name.includes(key)) {
@@ -1766,65 +2205,22 @@
 
       console.log(`🎭 Selecting ${matched.length} character(s): ${matched.map(m => m.name).join(', ')}`);
 
-      // Step 3: For each matched character, hover → find include button → click
+      // For each matched character: open ⋮ menu → click "Incluir no comando"
       let count = 0;
       for (const { name, card } of matched) {
-        for (let retry = 0; retry < CONFIG.MAX_IMAGE_SELECT_RETRIES; retry++) {
-          try {
-            // Scroll card into view
-            card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            await sleep(300);
+        // Scroll card into view
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        await sleep(400);
 
-            // Hover to reveal overlay controls (reuse existing helper)
-            await hoverOverImageCard(card);
-            const img = card.querySelector('img');
-            if (img) await hoverOverImageCard(img);
-            await sleep(500);
-
-            // Find "Incluir no comando" button near this card (reuse existing helper)
-            let incluirBtn = findIncluirButtonNear(card);
-
-            if (!incluirBtn) {
-              console.log(`🎭 @${name}: no button after hover — re-hovering...`);
-              const cardRect = card.getBoundingClientRect();
-              for (let mx = 0; mx < 3; mx++) {
-                const x = cardRect.left + (cardRect.width * (mx + 1)) / 4;
-                const y = cardRect.top + cardRect.height / 2;
-                card.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: x, clientY: y }));
-                await sleep(150);
-              }
-              await sleep(500);
-              incluirBtn = findIncluirButtonNear(card);
-            }
-
-            if (!incluirBtn) {
-              console.warn(`🎭 @${name}: "Incluir" button NOT found (retry ${retry + 1})`);
-              if (retry < CONFIG.MAX_IMAGE_SELECT_RETRIES - 1) {
-                document.body.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 0, clientY: 0 }));
-                await sleep(300);
-                continue;
-              }
-              break;
-            }
-
-            // Click (reuse existing multi-strategy helper)
-            console.log(`🎭 @${name}: clicking "Incluir" button...`);
-            const confirmed = await clickIncluirButton(incluirBtn);
-
-            if (confirmed) {
-              console.log(`🎭 ✅ @${name} — click confirmed!`);
-            } else {
-              console.log(`🎭 ⚠️ @${name} — click sent but no state change`);
-            }
-
-            count++;
-            await sleep(CONFIG.IMAGE_SELECT_DELAY);
-            break; // success, move to next character
-          } catch (err) {
-            console.warn(`⚠️ @${name} retry ${retry + 1}: ${err.message}`);
-            await sleep(500);
-          }
+        const success = await includeCardViaContextMenu(card, `@${name}`);
+        if (success) {
+          count++;
+          updateStatus(`🎭 ✅ @${name} incluído no comando`);
+        } else {
+          updateStatus(`🎭 ⚠️ @${name}: não conseguiu incluir`);
         }
+
+        await sleep(CONFIG.IMAGE_SELECT_DELAY);
       }
 
       console.log(`🎭 Character selection complete: ${count}/${matched.length} included`);
