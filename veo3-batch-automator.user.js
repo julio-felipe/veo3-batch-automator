@@ -290,7 +290,7 @@
           ">Detectando imagens...</div>
         </div>
         <div style="font-size: 10px; opacity: 0.6; padding: 0 2px; margin-bottom: 10px;">
-          &#128161; Use <code style="background: rgba(0,0,0,0.2); padding: 1px 4px; border-radius: 2px;">[CHARS: Bao, Tenzin]</code> no prompt para selecionar personagens espec&#237;ficos por @Nome
+          &#128161; <code style="background: rgba(0,0,0,0.2); padding: 1px 4px; border-radius: 2px;">[CHARS: Bao]</code> personagens @Nome &#8226; <code style="background: rgba(0,0,0,0.2); padding: 1px 4px; border-radius: 2px;">[IMGS: macaw, 1]</code> imagens por t&#237;tulo/&#237;ndice
         </div>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
           <button id="veo3-start-btn" style="
@@ -583,19 +583,36 @@
       .filter(p => p.length > 0);
   }
 
-  // Extracts [CHARS: Name1, Name2] from prompt, returns clean prompt + character list
-  // Supports: [CHARS: ...], [CHAR: ...], [chars: ...] — anywhere in the prompt
+  // Extracts [CHARS: Name1, Name2] and [IMGS: keyword1, 2] from prompt
+  // Returns clean prompt + character list + image keywords list
+  // Supports: [CHARS: ...], [CHAR: ...], [IMGS: ...], [IMG: ...] — case-insensitive
   function parseCharsFromPrompt(promptText) {
-    const match = promptText.match(/\[CHARS?:\s*([^\]]+)\]\s*\n?/i);
-    if (!match) {
-      return { cleanPrompt: promptText, characters: [] };
+    let cleanPrompt = promptText;
+    let characters = [];
+    let imageKeywords = [];
+
+    // Extract [CHARS: ...] / [CHAR: ...]
+    const charsMatch = cleanPrompt.match(/\[CHARS?:\s*([^\]]+)\]\s*\n?/i);
+    if (charsMatch) {
+      characters = charsMatch[1]
+        .split(',')
+        .map(c => c.trim().toLowerCase())
+        .filter(c => c.length > 0);
+      cleanPrompt = cleanPrompt.replace(charsMatch[0], '');
     }
-    const characters = match[1]
-      .split(',')
-      .map(c => c.trim().toLowerCase())
-      .filter(c => c.length > 0);
-    const cleanPrompt = promptText.replace(match[0], '').replace(/\n{2,}/g, '\n').trim();
-    return { cleanPrompt, characters };
+
+    // Extract [IMGS: ...] / [IMG: ...]
+    const imgsMatch = cleanPrompt.match(/\[IMGS?:\s*([^\]]+)\]\s*\n?/i);
+    if (imgsMatch) {
+      imageKeywords = imgsMatch[1]
+        .split(',')
+        .map(k => k.trim().toLowerCase())
+        .filter(k => k.length > 0);
+      cleanPrompt = cleanPrompt.replace(imgsMatch[0], '');
+    }
+
+    cleanPrompt = cleanPrompt.replace(/\n{2,}/g, '\n').trim();
+    return { cleanPrompt, characters, imageKeywords };
   }
 
   // Scans page for elements with @Name: text pattern near image cards
@@ -2103,7 +2120,7 @@
       if (item.closest('#veo3-panel, #veo3-bubble')) continue;
       const text = (item.textContent || '').toLowerCase();
       if (text.includes('incluir no comando') || text.includes('include in prompt') ||
-          text.includes('incluir') && text.includes('comando')) {
+        text.includes('incluir') && text.includes('comando')) {
         incluirMenuItem = item;
         console.log(`🎭 ${label}: found "Incluir no comando" → <${item.tagName}> text="${(item.textContent || '').trim().substring(0, 40)}"`);
         break;
@@ -2234,6 +2251,322 @@
   }
 
   // ============================================================================
+  // IMAGE-BY-KEYWORD SELECTION (via "+" button → resource panel)
+  // ============================================================================
+
+  // Remove images/thumbnails already attached to the prompt area
+  // before including new ones (prevents accumulation across consecutive prompts)
+  async function clearAttachedImages() {
+    // Strategy 1: Find "x" / close buttons on image chips/thumbnails in the prompt area
+    const promptAreas = document.querySelectorAll(
+      '[class*="prompt"], [class*="input"], [class*="command"], ' +
+      '[class*="composer"], [class*="editor"], [class*="textarea"]'
+    );
+
+    let cleared = 0;
+    for (const area of promptAreas) {
+      if (area.closest('#veo3-panel, #veo3-bubble')) continue;
+
+      // Look for close/remove buttons on attached image chips
+      const closeButtons = area.querySelectorAll(
+        'button[aria-label*="Remover"], button[aria-label*="remover"], ' +
+        'button[aria-label*="Remove"], button[aria-label*="remove"], ' +
+        'button[aria-label*="close"], button[aria-label*="Close"], ' +
+        'button[aria-label*="Fechar"], button[aria-label*="fechar"], ' +
+        'button[aria-label*="Excluir"], button[aria-label*="excluir"]'
+      );
+
+      for (const btn of closeButtons) {
+        try {
+          btn.click();
+          cleared++;
+          await sleep(200);
+        } catch (e) { /* ignore */ }
+      }
+    }
+
+    // Strategy 2: Find X/close icons near tiny thumbnails (<50px)
+    if (cleared === 0) {
+      const tinyImgs = document.querySelectorAll('img');
+      for (const img of tinyImgs) {
+        if (img.closest('#veo3-panel, #veo3-bubble')) continue;
+        const rect = img.getBoundingClientRect();
+        // Attached thumbnails are small circular chips (typically 24-48px)
+        if (rect.width > 12 && rect.width < 60 && rect.height > 12 && rect.height < 60) {
+          const container = img.parentElement;
+          if (!container) continue;
+          const closeBtn = container.querySelector(
+            'button, [role="button"], i.google-symbols'
+          );
+          if (closeBtn) {
+            const iconText = (closeBtn.textContent || '').trim();
+            if (iconText === 'close' || iconText === 'cancel' || iconText === '✕' || iconText === '×') {
+              try {
+                closeBtn.click();
+                cleared++;
+                await sleep(200);
+              } catch (e) { /* ignore */ }
+            }
+          }
+        }
+      }
+    }
+
+    if (cleared > 0) {
+      console.log(`🧹 clearAttachedImages: removed ${cleared} attached image(s)`);
+      await sleep(300);
+    }
+    return cleared;
+  }
+
+  // Open the resource panel by clicking the "+" button near the prompt area
+  // Returns: the button element or null
+  async function openResourcePanel() {
+    // Strategy 1: Find "+" / "add" button near the textarea
+    const addButtons = document.querySelectorAll('button, [role="button"]');
+    let addBtn = null;
+
+    for (const btn of addButtons) {
+      if (btn.closest('#veo3-panel, #veo3-bubble')) continue;
+      const icon = btn.querySelector('i.google-symbols');
+      const iconText = icon ? (icon.textContent || '').trim() : '';
+      const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+      const title = (btn.getAttribute('title') || '').toLowerCase();
+
+      if (iconText === 'add' || iconText === 'add_circle' || iconText === 'add_circle_outline' ||
+        ariaLabel.includes('adicionar') || ariaLabel.includes('add') ||
+        ariaLabel.includes('recurso') || ariaLabel.includes('resource') ||
+        title.includes('adicionar') || title.includes('add')) {
+        // Must be near the prompt input (not a random add button)
+        const textarea = document.querySelector('textarea, [contenteditable="true"]');
+        if (textarea) {
+          const textRect = textarea.getBoundingClientRect();
+          const btnRect = btn.getBoundingClientRect();
+          // Check proximity: within 200px vertically
+          if (Math.abs(btnRect.top - textRect.top) < 200) {
+            addBtn = btn;
+            break;
+          }
+        } else {
+          addBtn = btn;
+          break;
+        }
+      }
+    }
+
+    if (!addBtn) {
+      console.warn('🖼️ openResourcePanel: "+" button not found');
+      return null;
+    }
+
+    console.log(`🖼️ Opening resource panel via "+" button...`);
+    const rect = addBtn.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    addBtn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+    await sleep(30);
+    addBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+    await sleep(30);
+    addBtn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+    addBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+    addBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+    addBtn.click();
+
+    await sleep(800); // Wait for popup animation
+    return addBtn;
+  }
+
+  // Close the resource panel by pressing Escape or clicking outside
+  async function closeResourcePanel() {
+    document.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true
+    }));
+    await sleep(400);
+  }
+
+  // Find images listed in the resource panel popup
+  // Returns: Array<{ element, title, index }>
+  function findResourceImages() {
+    const results = [];
+
+    // The resource panel shows a list of items with thumbnails + titles
+    // Strategy 1: Search for items with images + text in overlay/dialog/popup containers
+    const panels = document.querySelectorAll(
+      '[role="dialog"], [role="listbox"], [role="menu"], [role="list"], ' +
+      '[class*="popup"], [class*="overlay"], [class*="modal"], [class*="dropdown"], ' +
+      '[class*="panel"], [class*="resource"], [class*="picker"], [class*="selector"]'
+    );
+
+    for (const panel of panels) {
+      if (panel.closest('#veo3-panel, #veo3-bubble')) continue;
+      if (panel.offsetParent === null && panel.style.display !== 'contents') continue;
+
+      // Find items inside the panel
+      const items = panel.querySelectorAll(
+        '[role="option"], [role="listitem"], [role="menuitem"], ' +
+        'li, [class*="item"], [class*="card"], [class*="row"]'
+      );
+
+      for (const item of items) {
+        const img = item.querySelector('img');
+        if (!img) continue;
+
+        // Get the title text: aria-label, text content, alt, or title
+        let title = item.getAttribute('aria-label') || '';
+        if (!title) {
+          // Get text content excluding deeply nested elements
+          const textNodes = [];
+          const walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT);
+          let n;
+          while ((n = walker.nextNode())) {
+            const t = (n.textContent || '').trim();
+            if (t.length > 2) textNodes.push(t);
+          }
+          title = textNodes.join(' ');
+        }
+        if (!title) {
+          title = img.alt || img.title || img.getAttribute('aria-label') || '';
+        }
+
+        if (title.length > 0) {
+          results.push({
+            element: item,
+            title: title.trim(),
+            index: results.length + 1 // 1-based
+          });
+        }
+      }
+
+      if (results.length > 0) break; // Found items in this panel, stop
+    }
+
+    // Strategy 2: If no panel found, search for recently-appeared elements with images
+    if (results.length === 0) {
+      const allImgs = document.querySelectorAll('img');
+      const seen = new Set();
+      for (const img of allImgs) {
+        if (img.closest('#veo3-panel, #veo3-bubble')) continue;
+        const rect = img.getBoundingClientRect();
+        // Resource panel images are small thumbnails (40-80px) in a vertical list
+        if (rect.width >= 30 && rect.width <= 120 && rect.height >= 30 && rect.height <= 120) {
+          const container = img.closest('li, [role="option"], [role="listitem"], [class*="item"]');
+          if (!container || seen.has(container)) continue;
+          seen.add(container);
+
+          let title = container.textContent?.trim() || img.alt || img.title || '';
+          if (title.length > 0) {
+            results.push({
+              element: container,
+              title: title,
+              index: results.length + 1
+            });
+          }
+        }
+      }
+    }
+
+    console.log(`🖼️ findResourceImages: found ${results.length} resource image(s):`, results.map(r => `[${r.index}] ${r.title.substring(0, 40)}`));
+    return results;
+  }
+
+  // Select images by keyword/index from the resource panel
+  // keywords: array of lowercase strings (e.g., ["macaw", "2"])
+  async function selectImagesByKeywords(keywords) {
+    if (state.imageSelectionInProgress) {
+      return { success: false, count: 0, error: 'Seleção já em andamento' };
+    }
+    state.imageSelectionInProgress = true;
+
+    try {
+      // Step 1: Clear any previously attached images
+      await clearAttachedImages();
+
+      let totalSelected = 0;
+
+      // We select one image at a time: open panel → find → click → panel closes → repeat
+      for (const keyword of keywords) {
+        console.log(`🖼️ Selecting image for keyword: "${keyword}"...`);
+
+        // Open resource panel
+        const panelBtn = await openResourcePanel();
+        if (!panelBtn) {
+          console.warn(`🖼️ Could not open resource panel for keyword "${keyword}"`);
+          continue;
+        }
+
+        // Find available images
+        const images = findResourceImages();
+        if (images.length === 0) {
+          console.warn('🖼️ No images found in resource panel');
+          await closeResourcePanel();
+          continue;
+        }
+
+        // Match by index (numeric keyword) or title (text keyword)
+        let target = null;
+        const isNumeric = /^\d+$/.test(keyword);
+
+        if (isNumeric) {
+          const idx = parseInt(keyword);
+          target = images.find(img => img.index === idx);
+          if (!target) {
+            console.warn(`🖼️ Index ${idx} out of range (${images.length} images available)`);
+          }
+        } else {
+          // Fuzzy text match: substring in title (case-insensitive)
+          target = images.find(img => img.title.toLowerCase().includes(keyword));
+          if (!target) {
+            // Try matching start of each word
+            target = images.find(img => {
+              const words = img.title.toLowerCase().split(/\s+/);
+              return words.some(w => w.startsWith(keyword) || keyword.startsWith(w));
+            });
+          }
+          if (!target) {
+            console.warn(`🖼️ No image matching keyword "${keyword}" in titles: ${images.map(i => i.title.substring(0, 30)).join(', ')}`);
+          }
+        }
+
+        if (target) {
+          // Click the matched item to include it
+          console.log(`🖼️ Clicking resource image: [${target.index}] "${target.title.substring(0, 50)}"`);
+          target.element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          await sleep(200);
+
+          const rect = target.element.getBoundingClientRect();
+          const cx = rect.left + rect.width / 2;
+          const cy = rect.top + rect.height / 2;
+          target.element.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+          await sleep(30);
+          target.element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+          await sleep(30);
+          target.element.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+          target.element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+          target.element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+          target.element.click();
+
+          totalSelected++;
+          console.log(`🖼️ ✅ Image "${target.title.substring(0, 30)}" selected!`);
+          await sleep(CONFIG.IMAGE_SELECT_DELAY);
+        }
+
+        // Close panel (it may auto-close after selection, but ensure it)
+        await closeResourcePanel();
+        await sleep(300);
+      }
+
+      console.log(`🖼️ Image keyword selection complete: ${totalSelected}/${keywords.length} selected`);
+      return { success: totalSelected > 0, count: totalSelected, error: null };
+    } catch (err) {
+      console.error(`❌ selectImagesByKeywords error: ${err.message}`);
+      await closeResourcePanel();
+      return { success: false, count: 0, error: err.message };
+    } finally {
+      state.imageSelectionInProgress = false;
+    }
+  }
+
+  // ============================================================================
   // CORE AUTOMATION LOGIC
   // ============================================================================
   // Get ORIGINAL native setter via hidden iframe (bypasses any prototype patching)
@@ -2265,10 +2598,10 @@
     if (!obj || typeof obj !== 'object') return false;
     let injected = false;
     const promptKeys = ['prompt', 'text', 'input', 'query', 'message', 'content', 'userInput',
-                        'promptText', 'user_input', 'request_text', 'textInput'];
+      'promptText', 'user_input', 'request_text', 'textInput'];
     for (const key of promptKeys) {
       if (key in obj && (obj[key] === '' || obj[key] === null || obj[key] === undefined ||
-          (typeof obj[key] === 'string' && obj[key].trim().length === 0))) {
+        (typeof obj[key] === 'string' && obj[key].trim().length === 0))) {
         obj[key] = prompt;
         injected = true;
         console.log(`🎯 Interceptor: injected prompt into "${key}"`);
@@ -3662,8 +3995,8 @@
             await sleep(1500);
           }
 
-          // Parse [CHARS: Name1, Name2] directive from prompt if present
-          const { cleanPrompt, characters } = parseCharsFromPrompt(prompt);
+          // Parse [CHARS: Name1, Name2] and [IMGS: keyword1, 2] directives from prompt
+          const { cleanPrompt, characters, imageKeywords } = parseCharsFromPrompt(prompt);
 
           if (characters.length > 0) {
             // Selective: only include named character images (auto-detected by @Name:)
@@ -3681,7 +4014,25 @@
               console.warn(`⚠️ Character selection failed: ${charErr.message}. Continuing with prompt send.`);
               updateStatus(`[${paddedNum}] ⚠️ Seleção de personagens falhou, continuando...`);
             }
-          } else if (state.includeImagesEnabled) {
+          }
+
+          if (imageKeywords.length > 0) {
+            // [IMGS: ...] — select images by keyword/index via resource panel
+            try {
+              updateStatus(`[${paddedNum}] 🖼️ Selecionando imagens [IMGS: ${imageKeywords.join(', ')}]...`);
+              const imgResult = await selectImagesByKeywords(imageKeywords);
+              if (imgResult.success) {
+                updateStatus(`[${paddedNum}] ✅ ${imgResult.count} imagem(ns) incluída(s) por keyword`);
+              } else {
+                updateStatus(`[${paddedNum}] ⚠️ ${imgResult.error || 'Seleção de imagens parcial'}`);
+              }
+              await microDelay();
+            } catch (imgErr) {
+              // Image keyword selection is best-effort — never block prompt send
+              console.warn(`⚠️ Image keyword selection failed: ${imgErr.message}. Continuing with prompt send.`);
+              updateStatus(`[${paddedNum}] ⚠️ Seleção de imagens por keyword falhou, continuando...`);
+            }
+          } else if (characters.length === 0 && state.includeImagesEnabled) {
             // Legacy: include ALL images (existing behavior unchanged)
             updateStatus(`[${paddedNum}] 🖼️ Selecionando imagens de referência...`);
             const imageResult = await selectAllImages();
