@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Veo3 Prompt Batch Automator
 // @namespace    https://synkra.io/
-// @version      1.6.0
+// @version      1.7.0
 // @description  Automate batch video generation in Google Veo 3.1 — Send All then Download All
 // @author       j. felipe
 // @match        https://labs.google/fx/pt/tools/flow/project/*
@@ -251,7 +251,7 @@
         padding: 12px 16px; cursor: grab; background: rgba(0,0,0,0.1);
         border-radius: 12px 12px 0 0; user-select: none;
       ">
-        <span style="font-weight: 600; font-size: 14px;">VEO3 Batch Automator <span style="font-size:10px;opacity:0.6">v1.6.0</span></span>
+        <span style="font-weight: 600; font-size: 14px;">VEO3 Batch Automator <span style="font-size:10px;opacity:0.6">v1.7.0</span></span>
         <div style="display: flex; gap: 8px;">
           <button id="veo3-minimize-btn" style="
             background: none; border: none; color: white; cursor: pointer;
@@ -1612,7 +1612,7 @@
     const ts = new Date().toLocaleTimeString('pt-BR');
     info.push(`=== VEO3 DIAGNOSTIC (${isDeep ? 'PROFUNDO' : 'RÁPIDO'}) — ${ts} ===`);
     info.push(`URL: ${window.location.href}`);
-    info.push(`Script: v1.6.0`);
+    info.push(`Script: v1.7.0`);
 
     updateStatus(`🔍 Executando diagnóstico ${isDeep ? 'profundo' : 'rápido'}...`);
 
@@ -3880,60 +3880,52 @@
   async function triggerNativeDownload(url, filename) {
     console.log(`🎯 Native download: ${url.substring(0, 80)} → ${filename}`);
 
-    // For Google Storage URLs, we need to fetch and then trigger download
-    if (url.includes('storage.googleapis.com')) {
-      console.log('📥 [DL] Google Storage URL detected - fetching...');
-
-      try {
-        const response = await fetch(url);
-        const blob = await response.blob();
+    try {
+      // Strategy 1: fetch as blob → <a download> (works for same-origin + redirects)
+      const blob = await fetchVideoBlob(url);
+      if (blob && blob.size > 0) {
         const blobUrl = URL.createObjectURL(blob);
-
         const a = document.createElement('a');
         a.href = blobUrl;
         a.download = filename;
         a.style.display = 'none';
         document.body.appendChild(a);
         a.click();
-
-        setTimeout(() => {
-          document.body.removeChild(a);
-          URL.revokeObjectURL(blobUrl);
-        }, 1000);
+        setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(blobUrl); }, 1000);
 
         state.lastDownloadComplete = true;
-        console.log(`✅ Download triggered: ${filename}`);
+        console.log(`✅ Downloaded: ${filename} (${(blob.size / 1024 / 1024).toFixed(1)}MB)`);
         updateStatus(`✅ Baixado: ${filename}`);
-      } catch (err) {
-        console.error('❌ Fetch failed:', err);
-        // Fallback: open in new tab (user downloads manually)
-        window.open(url, '_blank');
-        state.lastDownloadComplete = false;
-        updateStatus(`⚠️ Aberto em nova aba (verifique): ${filename}`);
+        return;
       }
 
-      return;
+      // Strategy 2: direct <a download> link (browser handles redirect)
+      console.log('📥 [DL] fetch failed, trying <a download> link...');
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => document.body.removeChild(a), 1000);
+
+      state.lastDownloadComplete = true; // Assume success with <a download>
+      console.log(`✅ Download via link: ${filename}`);
+      updateStatus(`✅ Baixado: ${filename}`);
+    } catch (err) {
+      console.error(`❌ Download failed: ${err.message}`);
+      // Last resort: <a download> without blob
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => document.body.removeChild(a), 1000);
+
+      state.lastDownloadComplete = false;
+      updateStatus(`⚠️ Download tentado: ${filename}`);
     }
-
-    // Standard blob/local URLs
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.style.display = 'none';
-    document.body.appendChild(a);
-    a.setAttribute('download', filename);
-    a.click();
-
-    setTimeout(() => {
-      document.body.removeChild(a);
-      if (url.startsWith('blob:')) {
-        URL.revokeObjectURL(url);
-      }
-    }, 1000);
-
-    state.lastDownloadComplete = true;
-    console.log(`✅ Download triggered: ${filename}`);
-    updateStatus(`✅ Baixado: ${filename}`);
   }
 
   // [NEW] Intercept window.open to capture video URLs and prevent tab opening
@@ -4259,105 +4251,245 @@
   // PAGE VIDEO SCAN & DOWNLOAD (independent of batch flow)
   // ============================================================================
 
-  // Scroll through the entire page to collect ALL video elements
-  // VEO3 uses virtual scrolling — only a few items are rendered at a time.
-  // This mirrors the same approach as scrollToCollectAllImages.
-  async function scrollToCollectAllVideos() {
-    const collected = new Map(); // src → video element (deduped by src)
+  // ── Method 1: Extract ALL video URLs from React's internal fiber tree ──
+  // VEO3 stores ALL media data in React state, even for items not rendered
+  // in the virtual scroll DOM. This bypasses virtual-scroll entirely.
+  function extractVideoUrlsFromReact() {
+    const urls = new Set();
+    const visited = new WeakSet();
+    const urlPattern = /media\.getMediaUrlRedirect/;
 
-    // Helper: collect all videos currently in DOM
-    function collectVisibleVideos() {
+    function searchValue(val, depth) {
+      if (depth > 15) return;
+      if (!val || typeof val !== 'object') return;
+      if (visited.has(val)) return;
+      try { visited.add(val); } catch (e) { return; }
+
+      // Check arrays
+      if (Array.isArray(val)) {
+        for (let i = 0; i < val.length && i < 500; i++) {
+          const item = val[i];
+          if (typeof item === 'string' && urlPattern.test(item)) {
+            urls.add(item);
+          } else if (typeof item === 'object' && item) {
+            searchValue(item, depth + 1);
+          }
+        }
+        return;
+      }
+
+      // Check object properties
+      const keys = Object.keys(val);
+      for (let k = 0; k < keys.length && k < 200; k++) {
+        const key = keys[k];
+        // Skip DOM nodes, fiber circular refs
+        if (key === 'stateNode' || key === '_owner' || key === 'return' ||
+          key === '_debugOwner' || key === '_store' || key === 'ref' ||
+          key === '_self' || key === '_source') continue;
+        try {
+          const prop = val[key];
+          if (typeof prop === 'string') {
+            if (urlPattern.test(prop)) urls.add(prop);
+          } else if (typeof prop === 'object' && prop) {
+            searchValue(prop, depth + 1);
+          }
+        } catch (e) { /* skip inaccessible */ }
+      }
+    }
+
+    // Strategy A: Search React fiber tree from root
+    const root = document.getElementById('root') || document.querySelector('[data-reactroot]');
+    if (root) {
+      const fiberKey = Object.keys(root).find(k =>
+        k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
+      if (fiberKey) {
+        console.log('📹 React: scanning fiber tree for video URLs...');
+        try {
+          const fiber = root[fiberKey];
+          // Walk the fiber tree (child/sibling)
+          function walkFiber(node, depth) {
+            if (!node || depth > 30) return;
+            if (visited.has(node)) return;
+            try { visited.add(node); } catch (e) { return; }
+
+            // Check memoizedProps
+            if (node.memoizedProps) searchValue(node.memoizedProps, 0);
+            // Check memoizedState
+            if (node.memoizedState) searchValue(node.memoizedState, 0);
+            // Check pendingProps
+            if (node.pendingProps) searchValue(node.pendingProps, 0);
+
+            walkFiber(node.child, depth + 1);
+            walkFiber(node.sibling, depth + 1);
+          }
+          walkFiber(fiber, 0);
+        } catch (e) {
+          console.warn('📹 React fiber scan error:', e.message);
+        }
+      }
+    }
+
+    // Strategy B: Search React props on ALL DOM elements with props
+    const propsPrefix = '__reactProps$';
+    const allEls = document.querySelectorAll('*');
+    for (const el of allEls) {
+      const propsKey = Object.keys(el).find(k => k.startsWith(propsPrefix));
+      if (!propsKey) continue;
+      try {
+        searchValue(el[propsKey], 0);
+      } catch (e) { /* skip */ }
+    }
+
+    // Filter: only keep getMediaUrlRedirect URLs (video/media)
+    const videoUrls = [];
+    for (const url of urls) {
+      // Normalize partial URLs
+      let fullUrl = url;
+      if (!fullUrl.startsWith('http')) {
+        fullUrl = 'https://labs.google/fx/api/trpc/' + fullUrl;
+      }
+      videoUrls.push(fullUrl);
+    }
+
+    console.log(`📹 React extraction: found ${videoUrls.length} media URLs`);
+    return videoUrls;
+  }
+
+  // ── Method 2: Scroll-based collection (fallback) ──
+  // Scrolls through "View videos" filter and collects <video> elements
+  async function scrollCollectVideos() {
+    const collected = new Map();
+
+    function collectVisible() {
+      let n = 0;
       const videos = document.querySelectorAll('video');
-      let newCount = 0;
       for (const video of videos) {
         if (video.closest('#veo3-panel, #veo3-bubble')) continue;
         const url = video.currentSrc || video.src || '';
         if (!url) continue;
         const rect = video.getBoundingClientRect();
-        // Skip tiny/hidden videos
         if (rect.width < 50 && rect.height < 50 && video.videoWidth < 50) continue;
         if (!collected.has(url)) {
-          collected.set(url, {
-            element: video,
-            url: url,
-            width: video.videoWidth || rect.width || 0,
-            height: video.videoHeight || rect.height || 0,
-            duration: isNaN(video.duration) ? 0 : video.duration
-          });
-          newCount++;
+          collected.set(url, { url, element: video });
+          n++;
         }
       }
-      return newCount;
+      return n;
     }
 
-    // Find the scrollable container (same logic as images)
+    // Click "View videos" filter
+    let clickedFilter = false;
+    const buttons = document.querySelectorAll('button');
+    for (const btn of buttons) {
+      const icon = btn.querySelector('i.google-symbols, i.material-icons');
+      const iconText = icon ? (icon.textContent || '').trim().toLowerCase() : '';
+      const btnText = (btn.textContent || '').toLowerCase();
+      if (iconText === 'videocam' && (btnText.includes('video') || btnText.includes('vídeo'))) {
+        console.log('📹 Scroll: clicking "View videos" filter...');
+        btn.click();
+        clickedFilter = true;
+        await sleep(1000);
+        break;
+      }
+    }
+
+    // Find scrollable container
     let scrollContainer = null;
-    const allElements = document.querySelectorAll('div, main, section');
-    for (const el of allElements) {
+    const divs = document.querySelectorAll('div, main, section');
+    for (const el of divs) {
       if (el.closest('#veo3-panel, #veo3-bubble')) continue;
       const style = getComputedStyle(el);
       if ((style.overflowY === 'auto' || style.overflowY === 'scroll') &&
-        el.scrollHeight > el.clientHeight + 200 &&
-        el.clientHeight > 300) {
+        el.scrollHeight > el.clientHeight + 200 && el.clientHeight > 300) {
         if (!scrollContainer || el.scrollHeight > scrollContainer.scrollHeight) {
           scrollContainer = el;
         }
       }
     }
 
-    if (scrollContainer) {
-      console.log(`📹 scrollToCollectAllVideos: found scrollable container scrollHeight=${scrollContainer.scrollHeight}`);
-    } else {
-      console.log(`📹 scrollToCollectAllVideos: no inner scrollable found, using document`);
-    }
-
-    // Save current scroll positions
-    const savedContainerScroll = scrollContainer ? scrollContainer.scrollTop : 0;
-    const savedWindowScroll = window.scrollY;
-
-    // Collect initial videos
-    collectVisibleVideos();
-
     const target = scrollContainer || document.documentElement;
-    const maxHeight = target.scrollHeight;
-    const scrollStep = 400;
-    const viewportHeight = target.clientHeight || window.innerHeight;
+    const maxH = target.scrollHeight;
+    const step = 350;
+    const saved = scrollContainer ? scrollContainer.scrollTop : window.scrollY;
 
-    // Scroll to top first
+    collectVisible();
     target.scrollTop = 0;
     if (!scrollContainer) window.scrollTo({ top: 0, behavior: 'instant' });
-    await sleep(400);
-    collectVisibleVideos();
+    await sleep(500);
+    collectVisible();
 
-    console.log(`📹 scrollToCollectAllVideos: scrolling ${maxHeight}px in ${scrollStep}px steps...`);
-
-    // Scroll down collecting videos
-    let noNewCount = 0;
-    for (let pos = 0; pos <= maxHeight; pos += scrollStep) {
+    // Single pass down with 800ms wait
+    console.log(`📹 Scroll: pass down (scrollHeight=${maxH})...`);
+    for (let pos = 0; pos <= maxH; pos += step) {
       target.scrollTop = pos;
       if (!scrollContainer) window.scrollTo({ top: pos, behavior: 'instant' });
-      await sleep(300);
+      await sleep(800);
+      const n = collectVisible();
+      if (n > 0) console.log(`📹 Scroll pos=${pos}: +${n} (total: ${collected.size})`);
+    }
 
-      const newFound = collectVisibleVideos();
-      if (newFound > 0) {
-        noNewCount = 0;
-        console.log(`📹 pos=${pos}: +${newFound} videos (total: ${collected.size})`);
-      } else {
-        noNewCount++;
+    // Single pass back up
+    console.log(`📹 Scroll: pass up (found ${collected.size})...`);
+    for (let pos = maxH; pos >= 0; pos -= step) {
+      target.scrollTop = pos;
+      if (!scrollContainer) window.scrollTo({ top: pos, behavior: 'instant' });
+      await sleep(800);
+      const n = collectVisible();
+      if (n > 0) console.log(`📹 Scroll pos=${pos}: +${n} (total: ${collected.size})`);
+    }
+
+    // Restore view
+    if (clickedFilter) {
+      for (const btn of buttons) {
+        const icon = btn.querySelector('i.google-symbols, i.material-icons');
+        const iconText = icon ? (icon.textContent || '').trim().toLowerCase() : '';
+        if (iconText === 'dashboard') {
+          btn.click();
+          await sleep(800);
+          break;
+        }
       }
-
-      // Stop if no new videos found in 15 consecutive steps
-      if (noNewCount > 15 && pos > viewportHeight * 2) break;
     }
-
-    // Restore scroll positions
-    if (scrollContainer) {
-      scrollContainer.scrollTop = savedContainerScroll;
-    }
-    window.scrollTo({ top: savedWindowScroll, behavior: 'instant' });
+    if (scrollContainer) scrollContainer.scrollTop = saved;
+    else window.scrollTo({ top: saved, behavior: 'instant' });
     await sleep(300);
 
-    console.log(`📹 scrollToCollectAllVideos: found ${collected.size} unique videos total`);
+    console.log(`📹 Scroll: found ${collected.size} unique videos`);
+    return collected;
+  }
+
+  // ── MAIN: Collect ALL videos using both methods ──
+  async function scrollToCollectAllVideos() {
+    const collected = new Map(); // url → { url, element }
+
+    // ═══ Method 1: Scroll-based (confirmed video URLs from <video> tags) ═══
+    const scrollResults = await scrollCollectVideos();
+    for (const [url, entry] of scrollResults) {
+      collected.set(url, entry);
+    }
+    console.log(`📹 After scroll: ${collected.size} confirmed video URLs`);
+
+    // ═══ Method 2: React fiber extraction (supplementary) ═══
+    // Only add URLs NOT already found AND not used as <img> src
+    const imgSrcs = new Set();
+    document.querySelectorAll('img').forEach(img => {
+      const s = img.currentSrc || img.src || '';
+      if (s) imgSrcs.add(s);
+    });
+
+    const reactUrls = extractVideoUrlsFromReact();
+    let reactAdded = 0;
+    for (const url of reactUrls) {
+      if (!collected.has(url) && !imgSrcs.has(url)) {
+        collected.set(url, { url, element: null });
+        reactAdded++;
+      }
+    }
+    if (reactAdded > 0) {
+      console.log(`📹 React added ${reactAdded} extra URLs (total: ${collected.size})`);
+    }
+
+    console.log(`📹 TOTAL: ${collected.size} unique videos found`);
     return [...collected.values()];
   }
 
@@ -4484,19 +4616,40 @@
     await writable.close();
   }
 
-  // Fetch video data as a Blob from any URL type
+  // Fetch video data as a Blob — uses fetch with redirect following
   async function fetchVideoBlob(url) {
     if (!url) return null;
-    if (url.startsWith('http') || url.startsWith('blob:')) {
-      try {
-        const response = await fetch(url);
-        return await response.blob();
-      } catch (err) {
-        console.warn(`⚠️ fetchVideoBlob failed: ${err.message}`);
+    if (!url.startsWith('http') && !url.startsWith('blob:')) return null;
+
+    try {
+      const response = await fetch(url);
+
+      if (!response.ok) {
+        console.warn(`⚠️ fetchVideoBlob: HTTP ${response.status}`);
         return null;
       }
+
+      // Validate content type — skip if we got JSON/HTML instead of video
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('json') || contentType.includes('html') || contentType.includes('text/plain')) {
+        console.warn(`⚠️ fetchVideoBlob: got "${contentType}" instead of video — skipping`);
+        return null;
+      }
+
+      const blob = await response.blob();
+
+      // Validate size — video should be at least 100KB
+      if (blob.size < 100000) {
+        console.warn(`⚠️ fetchVideoBlob: too small (${(blob.size / 1024).toFixed(0)}KB) — not a video`);
+        return null;
+      }
+
+      console.log(`✅ fetchVideoBlob: ${(blob.size / 1024 / 1024).toFixed(1)}MB (${contentType || 'unknown type'})`);
+      return blob;
+    } catch (err) {
+      console.warn(`⚠️ fetchVideoBlob failed: ${err.message}`);
+      return null;
     }
-    return null;
   }
 
   async function downloadPageVideos() {
@@ -4505,44 +4658,42 @@
     // Get folder name
     const folderInput = document.getElementById('veo3-folder-name');
     const rawFolderName = (folderInput?.value || '').trim();
-    // Sanitize: remove chars that are invalid in filenames
     const folderName = rawFolderName.replace(/[<>:"/\\|?*]/g, '').trim();
 
     updateStatus('────────────────────');
+
+    // ── STEP 1: Ask folder FIRST (must be in user gesture context) ──
+    let dirHandle = null;
+    if (window.showDirectoryPicker) {
+      try {
+        if (folderName) {
+          updateStatus(`📂 Selecione onde criar a pasta "${folderName}"...`);
+        } else {
+          updateStatus(`📂 Selecione a pasta para salvar os vídeos...`);
+        }
+        const parentDir = await window.showDirectoryPicker({ mode: 'readwrite' });
+        if (folderName) {
+          dirHandle = await parentDir.getDirectoryHandle(folderName, { create: true });
+          updateStatus(`📂 Pasta "${folderName}" criada!`);
+        } else {
+          dirHandle = parentDir;
+          updateStatus(`📂 Pasta selecionada!`);
+        }
+      } catch (err) {
+        if (err.name === 'AbortError') {
+          updateStatus('⚠️ Seleção de pasta cancelada.');
+          return;
+        }
+        console.warn(`⚠️ File System API failed: ${err.message}. Falling back to downloads.`);
+        dirHandle = null;
+      }
+    }
+
+    const useFolder = !!dirHandle;
+    const filePrefix = (!useFolder && folderName) ? `${folderName}-` : (!useFolder ? 'veo3-page-' : '');
+
+    // ── STEP 2: Scan page for ALL videos ──
     updateStatus('🔍 Escaneando TODA a página por vídeos...');
-
-    // Scroll the entire page to find ALL videos (including off-screen)
-    const videoEntries = await scrollToCollectAllVideos();
-
-    // Also grab any videos currently visible (in case scroll missed some)
-    const currentVideos = document.querySelectorAll('video');
-    const allVideoElements = [];
-    const seenUrls = new Set();
-
-    // Add scroll-collected videos first
-    for (const entry of videoEntries) {
-      if (!seenUrls.has(entry.url)) {
-        seenUrls.add(entry.url);
-        allVideoElements.push(entry.element);
-      }
-    }
-    // Add any extra visible videos
-    for (const v of currentVideos) {
-      const url = v.currentSrc || v.src || '';
-      if (url && !seenUrls.has(url)) {
-        seenUrls.add(url);
-        allVideoElements.push(v);
-      }
-    }
-
-    const videos = allVideoElements;
-
-    if (videos.length === 0) {
-      updateStatus('⚠️ Nenhum <video> encontrado na página.');
-      return;
-    }
-
-    updateStatus(`📹 ${videos.length} vídeo(s) encontrados, preparando download...`);
 
     // Disable button during download
     if (dlPageBtn) {
@@ -4550,28 +4701,39 @@
       dlPageBtn.style.opacity = '0.5';
     }
 
-    // ── Try File System Access API for real folder creation ──
-    let dirHandle = null;
-    if (folderName && window.showDirectoryPicker) {
-      try {
-        updateStatus(`📂 Selecione onde criar a pasta "${folderName}"...`);
-        const parentDir = await window.showDirectoryPicker({ mode: 'readwrite' });
-        dirHandle = await parentDir.getDirectoryHandle(folderName, { create: true });
-        updateStatus(`📂 Pasta "${folderName}" criada! Baixando ${videos.length} vídeos...`);
-      } catch (err) {
-        if (err.name === 'AbortError') {
-          updateStatus('⚠️ Seleção de pasta cancelada.');
-          if (dlPageBtn) { dlPageBtn.disabled = false; dlPageBtn.style.opacity = '1'; }
-          return;
-        }
-        console.warn(`⚠️ File System API failed: ${err.message}. Falling back to prefix.`);
-        dirHandle = null;
+    const videoEntries = await scrollToCollectAllVideos();
+
+    // Also grab any videos currently visible
+    const currentVideos = document.querySelectorAll('video');
+    const downloadList = [];
+    const seenDownloadUrls = new Set();
+
+    // From scroll-collected entries (URLs captured while elements were live)
+    for (const entry of videoEntries) {
+      if (entry.url && !seenDownloadUrls.has(entry.url)) {
+        seenDownloadUrls.add(entry.url);
+        downloadList.push({ url: entry.url, element: entry.element });
+      }
+    }
+    // From currently visible videos
+    for (const v of currentVideos) {
+      const url = v.currentSrc || v.src || '';
+      if (url && !seenDownloadUrls.has(url)) {
+        seenDownloadUrls.add(url);
+        downloadList.push({ url, element: v });
       }
     }
 
-    // Fallback: use folder name as prefix
-    const useFolder = !!dirHandle;
-    const filePrefix = (!useFolder && folderName) ? `${folderName}-` : (!useFolder ? 'veo3-page-' : '');
+    if (downloadList.length === 0) {
+      updateStatus('⚠️ Nenhum <video> encontrado na página.');
+      if (dlPageBtn) { dlPageBtn.disabled = false; dlPageBtn.style.opacity = '1'; }
+      return;
+    }
+
+    // Reverse: VEO3 shows newest first, download in prompt order
+    downloadList.reverse();
+
+    updateStatus(`📹 ${downloadList.length} vídeo(s) encontrados, baixando...`);
 
     if (!useFolder) {
       if (folderName) {
@@ -4584,14 +4746,10 @@
     let downloaded = 0;
     let failed = 0;
 
-    // VEO3 shows newest videos first in DOM — reverse to download in prompt order
-    const videoArray = Array.from(videos).reverse();
-
-    for (let i = 0; i < videoArray.length; i++) {
-      const video = videoArray[i];
+    for (let i = 0; i < downloadList.length; i++) {
+      const { url, element: video } = downloadList[i];
       const num = String(i + 1).padStart(3, '0');
       const filename = useFolder ? `${num}.mp4` : `${filePrefix}${num}.mp4`;
-      const url = video.currentSrc || video.src || '';
       let success = false;
 
       try {
@@ -4757,7 +4915,7 @@
         }
 
         // Delay between downloads
-        if (i < videos.length - 1) {
+        if (i < downloadList.length - 1) {
           await sleep(1200);
         }
       } catch (err) {
@@ -5468,7 +5626,7 @@
   // DEBUG & DIAGNOSTICS
   // ============================================================================
   function performDiagnostics() {
-    console.log('🔍 VEO3 Batch Automator v1.6.0 — Diagnostics');
+    console.log('🔍 VEO3 Batch Automator v1.7.0 — Diagnostics');
     console.log('='.repeat(50));
 
     const inputEl = findElement(SELECTORS.inputField, 'input');
@@ -5506,7 +5664,7 @@
   // INITIALIZATION
   // ============================================================================
   function init() {
-    console.log('🎬 VEO3 Batch Automator v1.6.0');
+    console.log('🎬 VEO3 Batch Automator v1.7.0');
     console.log(`📁 Downloads → ${CONFIG.DOWNLOAD_FOLDER}/001.mp4, 002.mp4, ...`);
     injectStyles();
     createFloatingBubble();
