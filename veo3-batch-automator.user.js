@@ -2950,6 +2950,40 @@
     try {
       console.log(`🎭 Selecting characters via ⋮ → Incluir: ${characterNames.join(', ')}`);
 
+      // ═══════════════════════════════════════════════════════════════════════
+      // Scroll the page to the BOTTOM before searching for character cards.
+      // In VEO3 Flow, the timeline shows newest at top, original character
+      // reference images at bottom. After many generations, the original
+      // cards get pushed off-screen. We need to scroll down to find them.
+      // ═══════════════════════════════════════════════════════════════════════
+      console.log('🎭 Scrolling to bottom to find original character references...');
+      const scrollContainer = document.querySelector('[class*="timeline"], [class*="scroll"], main, [role="main"]')
+        || document.scrollingElement || document.documentElement;
+
+      // Try scrolling the main content area to the very bottom
+      // First, try to find the actual scrollable container
+      let scroller = null;
+      const candidates = document.querySelectorAll('div');
+      for (const div of candidates) {
+        if (div.closest('#veo3-panel, #veo3-bubble')) continue;
+        const cs = getComputedStyle(div);
+        if ((cs.overflowY === 'auto' || cs.overflowY === 'scroll') &&
+          div.scrollHeight > div.clientHeight + 100 &&
+          div.clientHeight > 300) {
+          scroller = div;
+          break;
+        }
+      }
+
+      if (scroller) {
+        console.log(`🎭 Found scrollable container: <${scroller.tagName}> scrollHeight=${scroller.scrollHeight}`);
+        scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' });
+      } else {
+        // Fallback: scroll the entire page
+        window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
+      }
+      await sleep(800);
+
       // Find character cards on the page by @Name: patterns
       const cardMap = findCharacterCards();
 
@@ -2979,9 +3013,9 @@
           continue;
         }
 
-        // Scroll card into view
+        // Scroll card into view (the card itself, not the page bottom)
         card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        await sleep(400);
+        await sleep(500);
 
         // Click ⋮ → "Incluir no comando"
         const success = await includeCardViaContextMenu(card, `@${name}`);
