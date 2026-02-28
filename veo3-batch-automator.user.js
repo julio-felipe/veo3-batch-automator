@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Veo3 Prompt Batch Automator
 // @namespace    https://synkra.io/
-// @version      1.7.0
+// @version      1.7.2
 // @description  Automate batch video generation in Google Veo 3.1 — Send All then Download All
 // @author       j. felipe
 // @match        https://labs.google/fx/pt/tools/flow/project/*
@@ -3881,8 +3881,14 @@
     console.log(`🎯 Native download: ${url.substring(0, 80)} → ${filename}`);
 
     try {
-      // Strategy 1: fetch as blob → <a download> (works for same-origin + redirects)
-      const blob = await fetchVideoBlob(url);
+      // Step 0: Resolve tRPC redirect URLs to direct video URLs
+      let resolvedUrl = url;
+      if (url.includes('getMediaUrlRedirect')) {
+        resolvedUrl = await resolveMediaRedirectUrl(url);
+      }
+
+      // Strategy 1: fetch as blob → <a download> (works for same-origin + direct URLs)
+      const blob = await fetchVideoBlob(resolvedUrl);
       if (blob && blob.size > 0) {
         const blobUrl = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -3899,29 +3905,17 @@
         return;
       }
 
-      // Strategy 2: direct <a download> link (browser handles redirect)
-      console.log('📥 [DL] fetch failed, trying <a download> link...');
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      a.style.display = 'none';
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => document.body.removeChild(a), 1000);
+      // Strategy 2: <a download> with resolved URL (browser handles CORS natively for navigation)
+      console.log('📥 [DL] fetch failed, trying <a download> with resolved URL...');
+      downloadViaAnchor(resolvedUrl, filename);
 
       state.lastDownloadComplete = true; // Assume success with <a download>
       console.log(`✅ Download via link: ${filename}`);
       updateStatus(`✅ Baixado: ${filename}`);
     } catch (err) {
       console.error(`❌ Download failed: ${err.message}`);
-      // Last resort: <a download> without blob
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      a.style.display = 'none';
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => document.body.removeChild(a), 1000);
+      // Last resort: <a download> with original URL
+      downloadViaAnchor(url, filename);
 
       state.lastDownloadComplete = false;
       updateStatus(`⚠️ Download tentado: ${filename}`);
@@ -4616,13 +4610,86 @@
     await writable.close();
   }
 
-  // Fetch video data as a Blob — uses fetch with redirect following
+  // Resolve a tRPC getMediaUrlRedirect URL → extract the actual GCS signed URL from JSON response
+  async function resolveMediaRedirectUrl(url) {
+    if (!url || !url.includes('getMediaUrlRedirect')) return url;
+
+    try {
+      const response = await fetch(url, { credentials: 'same-origin' });
+      if (!response.ok) {
+        console.warn(`⚠️ resolveMediaRedirect: HTTP ${response.status}`);
+        return url;
+      }
+
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.includes('json')) {
+        // Not JSON — might be an actual redirect that fetch followed
+        console.log(`📹 resolveMediaRedirect: not JSON (${contentType}), using response directly`);
+        return response.url || url; // response.url = final URL after redirects
+      }
+
+      const json = await response.json();
+
+      // tRPC response structures: { result: { data: { json: URL } } } or { result: { data: URL } }
+      let directUrl = null;
+
+      // Try common tRPC response shapes
+      if (json?.result?.data?.json) {
+        directUrl = typeof json.result.data.json === 'string' ? json.result.data.json : null;
+      }
+      if (!directUrl && json?.result?.data) {
+        directUrl = typeof json.result.data === 'string' ? json.result.data : null;
+      }
+      if (!directUrl && typeof json?.result === 'string') {
+        directUrl = json.result;
+      }
+
+      // Deep search for URL strings containing storage.googleapis.com or .mp4
+      if (!directUrl) {
+        const jsonStr = JSON.stringify(json);
+        const urlMatch = jsonStr.match(/https?:\/\/storage\.googleapis\.com\/[^"\\]+/);
+        if (urlMatch) directUrl = urlMatch[0];
+      }
+      if (!directUrl) {
+        const jsonStr = JSON.stringify(json);
+        const urlMatch = jsonStr.match(/https?:\/\/[^"\\]*\.mp4[^"\\]*/);
+        if (urlMatch) directUrl = urlMatch[0];
+      }
+      // Also look for any long https URL that looks like a signed URL
+      if (!directUrl) {
+        const jsonStr = JSON.stringify(json);
+        const urlMatch = jsonStr.match(/https?:\/\/[^"\\]{50,}/);
+        if (urlMatch) directUrl = urlMatch[0];
+      }
+
+      if (directUrl) {
+        console.log(`✅ resolveMediaRedirect: extracted direct URL: ${directUrl.substring(0, 100)}`);
+        return directUrl;
+      }
+
+      console.warn(`⚠️ resolveMediaRedirect: could not extract URL from JSON`, json);
+      return url;
+    } catch (err) {
+      console.warn(`⚠️ resolveMediaRedirect failed: ${err.message}`);
+      return url;
+    }
+  }
+
+  // Fetch video data as a Blob — resolves tRPC URLs first, then fetches actual video
   async function fetchVideoBlob(url) {
     if (!url) return null;
     if (!url.startsWith('http') && !url.startsWith('blob:')) return null;
 
     try {
-      const response = await fetch(url);
+      // Step 1: Resolve tRPC redirect URLs to actual video URLs
+      let fetchUrl = url;
+      if (url.includes('getMediaUrlRedirect')) {
+        fetchUrl = await resolveMediaRedirectUrl(url);
+        console.log(`📹 fetchVideoBlob: resolved URL: ${fetchUrl.substring(0, 100)}`);
+      }
+
+      // Step 2: Fetch the actual video content
+      const response = await fetch(fetchUrl, { credentials: 'same-origin' });
 
       if (!response.ok) {
         console.warn(`⚠️ fetchVideoBlob: HTTP ${response.status}`);
@@ -4652,48 +4719,279 @@
     }
   }
 
-  async function downloadPageVideos() {
-    const dlPageBtn = document.getElementById('veo3-dl-page-btn');
+  // Fallback download: <a download> with resolved URL (browser handles redirect/CORS natively)
+  function downloadViaAnchor(url, filename) {
+    console.log(`📥 downloadViaAnchor: ${url.substring(0, 80)} → ${filename}`);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => document.body.removeChild(a), 2000);
+  }
 
-    // Get folder name
-    const folderInput = document.getElementById('veo3-folder-name');
-    const rawFolderName = (folderInput?.value || '').trim();
-    const folderName = rawFolderName.replace(/[<>:"/\\|?*]/g, '').trim();
+  // ═══════════════════════════════════════════════════════════════════
+  // VIDEO DOWNLOAD VIA NATIVE "Baixar" BUTTON (→ 720p)
+  // Each video card has a direct "downloadBaixar" button (icon="download").
+  // Clicking it opens a quality submenu: 270p, 720p, 1080p, 4K.
+  // We scroll through, click each "Baixar" → select "720p".
+  // Downloads go to the browser's default download folder.
+  // ═══════════════════════════════════════════════════════════════════
 
-    updateStatus('────────────────────');
+  // Icon selector that covers all Google icon font variants
+  const ICON_SELECTOR = 'i.google-symbols, i.material-icons, i.material-symbols-outlined, ' +
+    'span.google-symbols, span.material-icons, span.material-symbols-outlined, ' +
+    '.google-symbols, .material-icons, .material-symbols-outlined, mat-icon';
 
-    // ── STEP 1: Ask folder FIRST (must be in user gesture context) ──
-    let dirHandle = null;
-    if (window.showDirectoryPicker) {
-      try {
-        if (folderName) {
-          updateStatus(`📂 Selecione onde criar a pasta "${folderName}"...`);
-        } else {
-          updateStatus(`📂 Selecione a pasta para salvar os vídeos...`);
-        }
-        const parentDir = await window.showDirectoryPicker({ mode: 'readwrite' });
-        if (folderName) {
-          dirHandle = await parentDir.getDirectoryHandle(folderName, { create: true });
-          updateStatus(`📂 Pasta "${folderName}" criada!`);
-        } else {
-          dirHandle = parentDir;
-          updateStatus(`📂 Pasta selecionada!`);
-        }
-      } catch (err) {
-        if (err.name === 'AbortError') {
-          updateStatus('⚠️ Seleção de pasta cancelada.');
-          return;
-        }
-        console.warn(`⚠️ File System API failed: ${err.message}. Falling back to downloads.`);
-        dirHandle = null;
+  // Find all visible "Baixar" (download) buttons on video cards
+  function findBaixarButtons() {
+    const results = [];
+    const allBtns = document.querySelectorAll('button, [role="button"]');
+
+    for (const btn of allBtns) {
+      if (btn.closest('#veo3-panel, #veo3-bubble')) continue;
+      if (btn.offsetParent === null) continue;
+
+      const icon = btn.querySelector(ICON_SELECTOR);
+      const iconText = icon ? (icon.textContent || '').trim() : '';
+      const btnText = (btn.textContent || '').trim();
+
+      // Match: icon="download" AND text contains "Baixar" or "Download"
+      if (iconText === 'download' && (btnText.includes('Baixar') || btnText.includes('Download'))) {
+        // Skip header-level buttons (y < 50)
+        const rect = btn.getBoundingClientRect();
+        if (rect.top < 50 && rect.top > -50) continue; // header area
+        results.push(btn);
       }
     }
 
-    const useFolder = !!dirHandle;
-    const filePrefix = (!useFolder && folderName) ? `${folderName}-` : (!useFolder ? 'veo3-page-' : '');
+    return results;
+  }
 
-    // ── STEP 2: Scan page for ALL videos ──
-    updateStatus('🔍 Escaneando TODA a página por vídeos...');
+  // Dismiss any open menus/popups
+  async function dismissMenus() {
+    document.body.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true
+    }));
+    await sleep(400);
+    document.body.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true
+    }));
+    await sleep(400);
+  }
+
+  // Click a button via React onClick (walk up fiber tree) + DOM fallbacks
+  // skipReact: true → use only DOM events (for buttons like "Baixar" where
+  //   React onClick triggers an immediate zip download, bypassing the quality submenu)
+  async function clickButtonReliably(btn, { skipReact = false } = {}) {
+    const rect = btn.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const evtOpts = { bubbles: true, cancelable: true, composed: true, view: window, clientX: cx, clientY: cy, detail: 1 };
+
+    // Strategy A: React onClick from __reactProps$ (skipped if skipReact=true)
+    if (!skipReact) {
+      let el = btn;
+      for (let i = 0; i < 6 && el; i++) {
+        const propsKey = Object.keys(el).find(k => k.startsWith('__reactProps$'));
+        if (propsKey) {
+          const props = el[propsKey];
+          if (typeof props.onClick === 'function') {
+            console.log(`📹 clickButtonReliably: React onClick on <${el.tagName}>`);
+            props.onClick({
+              type: 'click', target: btn, currentTarget: el,
+              clientX: cx, clientY: cy, pageX: cx, pageY: cy,
+              preventDefault: () => {}, stopPropagation: () => {},
+              nativeEvent: new MouseEvent('click', evtOpts)
+            });
+            return true;
+          }
+        }
+        el = el.parentElement;
+      }
+    }
+
+    // Strategy B: Full pointer + mouse lifecycle with coordinates
+    console.log(`📹 clickButtonReliably: DOM events on <${btn.tagName}> at (${Math.round(cx)},${Math.round(cy)})${skipReact ? ' [skipReact]' : ''}`);
+    btn.focus();
+    await sleep(50);
+    btn.dispatchEvent(new PointerEvent('pointerover', { ...evtOpts, pointerType: 'mouse' }));
+    btn.dispatchEvent(new MouseEvent('mouseover', evtOpts));
+    await sleep(50);
+    btn.dispatchEvent(new PointerEvent('pointerenter', { ...evtOpts, pointerType: 'mouse', bubbles: false }));
+    btn.dispatchEvent(new MouseEvent('mouseenter', { ...evtOpts, bubbles: false }));
+    await sleep(100);
+    btn.dispatchEvent(new PointerEvent('pointerdown', { ...evtOpts, pointerType: 'mouse' }));
+    await sleep(40);
+    btn.dispatchEvent(new MouseEvent('mousedown', evtOpts));
+    await sleep(40);
+    btn.dispatchEvent(new PointerEvent('pointerup', { ...evtOpts, pointerType: 'mouse' }));
+    await sleep(40);
+    btn.dispatchEvent(new MouseEvent('mouseup', evtOpts));
+    await sleep(40);
+    btn.dispatchEvent(new MouseEvent('click', evtOpts));
+
+    // Strategy C: native .click()
+    await sleep(100);
+    btn.click();
+
+    // Strategy D: Enter key (some buttons respond to keyboard)
+    await sleep(100);
+    btn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true, cancelable: true }));
+    btn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true, cancelable: true }));
+    return false;
+  }
+
+  // Find a visible element by text content (for quality submenu items)
+  function findVisibleElementByText(targetTexts) {
+    // Strategy 1: Use existing TreeWalker-based findQualityOption
+    for (const target of targetTexts) {
+      const found = findQualityOption(target);
+      if (found) return found;
+    }
+
+    // Strategy 2: role-based elements
+    const roleItems = document.querySelectorAll('[role="menuitem"], [role="option"], [role="menuitemradio"], [role="button"]');
+    for (const item of roleItems) {
+      if (item.closest('#veo3-panel, #veo3-bubble')) continue;
+      if (item.offsetParent === null) continue;
+      const text = (item.textContent || '').trim();
+      for (const target of targetTexts) {
+        if (text.includes(target)) return item;
+      }
+    }
+
+    // Strategy 3: Broad search for leaf elements with short text
+    const allEls = document.querySelectorAll('button, a, li, div, span');
+    for (const el of allEls) {
+      if (el.closest('#veo3-panel, #veo3-bubble')) continue;
+      if (el.offsetParent === null) continue;
+      if (el.children.length > 4) continue; // skip large containers
+      const text = (el.textContent || '').trim();
+      if (text.length > 50) continue; // skip long text blocks
+      for (const target of targetTexts) {
+        if (text.includes(target)) return el;
+      }
+    }
+
+    return null;
+  }
+
+  // Count new elements that appeared after an action (menus, popups, etc.)
+  function countNewVisibleElements() {
+    let count = 0;
+    const candidates = document.querySelectorAll('[role="menu"], [role="listbox"], [role="dialog"], [role="menuitem"], [role="option"]');
+    for (const el of candidates) {
+      if (el.closest('#veo3-panel, #veo3-bubble')) continue;
+      if (el.offsetParent !== null) count++;
+    }
+    return count;
+  }
+
+  // Download ONE video: click "Baixar" button → quality submenu → 720p
+  async function downloadOneVideo(baixarBtn, index) {
+    const num = String(index).padStart(3, '0');
+
+    // 1. Scroll the button into view
+    baixarBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    await sleep(700);
+
+    // Snapshot visible menus before clicking
+    const menusBefore = countNewVisibleElements();
+
+    // 2. Click "Baixar" using ONLY native DOM events (skipReact=true)
+    //    React onClick triggers immediate zip download — we want the quality submenu
+    console.log(`📹 [${num}] Clicking "Baixar" (native)... menus before: ${menusBefore}`);
+    await clickButtonReliably(baixarBtn, { skipReact: true });
+    await sleep(2000);
+
+    // Check if a menu/popup appeared
+    const menusAfter = countNewVisibleElements();
+    console.log(`📹 [${num}] Menus after click: ${menusAfter} (was ${menusBefore})`);
+
+    // 3. Find "720p" in the quality submenu
+    let quality720 = findVisibleElementByText(['720p', '720']);
+
+    if (!quality720) {
+      // Retry: try pointer events with hover first, then click
+      console.log(`📹 [${num}] 720p not found, retrying with hover+click...`);
+      await dismissMenus();
+      await sleep(500);
+
+      // Hover over the button first
+      const rect = baixarBtn.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      baixarBtn.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false, clientX: cx, clientY: cy }));
+      baixarBtn.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: cx, clientY: cy }));
+      await sleep(800);
+
+      // Click again
+      await clickButtonReliably(baixarBtn, { skipReact: true });
+      await sleep(2500);
+      quality720 = findVisibleElementByText(['720p', '720']);
+    }
+
+    if (!quality720) {
+      // Last resort: try React onClick (might download a zip, but at least it downloads)
+      console.log(`📹 [${num}] 720p still not found — trying React onClick fallback...`);
+      await dismissMenus();
+      await sleep(500);
+      await clickButtonReliably(baixarBtn, { skipReact: false });
+      await sleep(2000);
+      quality720 = findVisibleElementByText(['720p', '720']);
+    }
+
+    if (!quality720) {
+      // Log what IS visible for debugging
+      const visibleItems = document.querySelectorAll('[role="menuitem"], [role="option"], [role="menuitemradio"]');
+      const visibleTexts = [];
+      for (const item of visibleItems) {
+        if (item.offsetParent !== null) {
+          visibleTexts.push((item.textContent || '').trim().substring(0, 50));
+        }
+      }
+      console.warn(`📹 [${num}] 720p NOT FOUND. Visible menu items: [${visibleTexts.join(', ')}]`);
+
+      // Also search for ANY quality-related text (270p, 480p, 720p, 1080p, 4K)
+      const anyQuality = findVisibleElementByText(['270p', '480p', '720p', '1080p', '4K', '4k']);
+      if (anyQuality) {
+        console.log(`📹 [${num}] Found other quality: "${(anyQuality.textContent || '').trim()}" — clicking it`);
+        await clickButtonReliably(anyQuality);
+        await sleep(2500);
+        await dismissMenus();
+        updateStatus(`  [${num}] ✅ Download iniciado (qualidade disponível)`);
+        return true;
+      }
+
+      await dismissMenus();
+      console.warn(`📹 [${num}] No quality options found — download may have started as zip`);
+      updateStatus(`  [${num}] ⚠️ Download iniciado (sem seleção de qualidade)`);
+      return true; // A download probably happened (zip)
+    }
+
+    // 4. Click "720p"
+    console.log(`📹 [${num}] Clicking "720p": <${quality720.tagName}> "${(quality720.textContent || '').trim().substring(0, 40)}"`);
+    await clickButtonReliably(quality720);
+    await sleep(2500);
+
+    // 5. Dismiss any remaining menus/popups
+    await dismissMenus();
+
+    updateStatus(`  [${num}] ✅ Download 720p iniciado`);
+    return true;
+  }
+
+  // ═══ Main video download function — scroll bottom→top + click "Baixar" → 720p ═══
+  async function downloadPageVideos() {
+    const dlPageBtn = document.getElementById('veo3-dl-page-btn');
+
+    updateStatus('────────────────────');
+    updateStatus('📹 Download de vídeos (Baixar → 720p)');
+    updateStatus('📂 Arquivos vão para a pasta de Downloads do navegador');
 
     // Disable button during download
     if (dlPageBtn) {
@@ -4701,237 +4999,142 @@
       dlPageBtn.style.opacity = '0.5';
     }
 
-    const videoEntries = await scrollToCollectAllVideos();
-
-    // Also grab any videos currently visible
-    const currentVideos = document.querySelectorAll('video');
-    const downloadList = [];
-    const seenDownloadUrls = new Set();
-
-    // From scroll-collected entries (URLs captured while elements were live)
-    for (const entry of videoEntries) {
-      if (entry.url && !seenDownloadUrls.has(entry.url)) {
-        seenDownloadUrls.add(entry.url);
-        downloadList.push({ url: entry.url, element: entry.element });
-      }
-    }
-    // From currently visible videos
-    for (const v of currentVideos) {
-      const url = v.currentSrc || v.src || '';
-      if (url && !seenDownloadUrls.has(url)) {
-        seenDownloadUrls.add(url);
-        downloadList.push({ url, element: v });
+    // ── STEP 1: Click "View videos" filter to show only videos ──
+    let clickedFilter = false;
+    const allPageBtns = document.querySelectorAll('button');
+    for (const btn of allPageBtns) {
+      const icon = btn.querySelector(ICON_SELECTOR);
+      const iconText = icon ? (icon.textContent || '').trim().toLowerCase() : '';
+      const btnText = (btn.textContent || '').toLowerCase();
+      if (iconText === 'videocam' && (btnText.includes('video') || btnText.includes('vídeo'))) {
+        console.log('📹 Clicking "View videos" filter...');
+        btn.click();
+        clickedFilter = true;
+        await sleep(1500);
+        break;
       }
     }
 
-    if (downloadList.length === 0) {
-      updateStatus('⚠️ Nenhum <video> encontrado na página.');
-      if (dlPageBtn) { dlPageBtn.disabled = false; dlPageBtn.style.opacity = '1'; }
-      return;
-    }
-
-    // Reverse: VEO3 shows newest first, download in prompt order
-    downloadList.reverse();
-
-    updateStatus(`📹 ${downloadList.length} vídeo(s) encontrados, baixando...`);
-
-    if (!useFolder) {
-      if (folderName) {
-        updateStatus(`📥 Baixando vídeos → prefixo "${folderName}-"...`);
-      } else {
-        updateStatus(`📥 Baixando vídeos da página...`);
+    // ── STEP 2: Find scrollable container ──
+    let scrollContainer = null;
+    const divs = document.querySelectorAll('div, main, section');
+    for (const el of divs) {
+      if (el.closest('#veo3-panel, #veo3-bubble')) continue;
+      const style = getComputedStyle(el);
+      if ((style.overflowY === 'auto' || style.overflowY === 'scroll') &&
+        el.scrollHeight > el.clientHeight + 200 && el.clientHeight > 300) {
+        if (!scrollContainer || el.scrollHeight > scrollContainer.scrollHeight) {
+          scrollContainer = el;
+        }
       }
     }
 
+    const scrollTarget = scrollContainer || document.documentElement;
+    const savedScroll = scrollContainer ? scrollContainer.scrollTop : window.scrollY;
+
+    // ── STEP 3: Scroll bottom→top (prompt order: oldest first) ──
+    const processedSlots = new Set();
     let downloaded = 0;
     let failed = 0;
+    let videoIndex = 0;
 
-    for (let i = 0; i < downloadList.length; i++) {
-      const { url, element: video } = downloadList[i];
-      const num = String(i + 1).padStart(3, '0');
-      const filename = useFolder ? `${num}.mp4` : `${filePrefix}${num}.mp4`;
-      let success = false;
+    const scrollStep = 350;
+    const scrollWait = 1200;
 
-      try {
-        // ── Strategy 0: Save directly to folder (File System API) ──
-        if (useFolder && (url.startsWith('http') || url.startsWith('blob:'))) {
-          updateStatus(`  [${num}] 📂 Salvando na pasta...`);
-          const blob = await fetchVideoBlob(url);
-          if (blob && blob.size > 0) {
-            await saveToFolder(dirHandle, filename, blob);
-            updateStatus(`  [${num}] ✅ ${folderName}/${filename}`);
-            success = true;
-          }
-        }
+    // Go to bottom first (oldest/first prompt is at the bottom)
+    const maxHeight = scrollTarget.scrollHeight;
+    scrollTarget.scrollTop = maxHeight;
+    if (!scrollContainer) window.scrollTo({ top: maxHeight, behavior: 'instant' });
+    await sleep(1500);
 
-        // ── Strategy 1: Direct URL download (HTTP) ──
-        if (!success && url.startsWith('http')) {
-          updateStatus(`  [${num}] ⬇️ Download direto (HTTP)...`);
-          if (useFolder) {
-            // Try fetching for folder save
-            const blob = await fetchVideoBlob(url);
-            if (blob && blob.size > 0) {
-              await saveToFolder(dirHandle, filename, blob);
-              updateStatus(`  [${num}] ✅ ${useFolder ? folderName + '/' : ''}${filename}`);
-              success = true;
-            }
-          }
-          if (!success) {
-            state.lastDownloadComplete = false;
-            await triggerNativeDownload(url, filename);
-            if (state.lastDownloadComplete) success = true;
-          }
-        }
+    // Recalculate maxHeight after scrolling (virtual scroll may update DOM)
+    const finalMaxHeight = scrollTarget.scrollHeight;
 
-        // ── Strategy 2: Blob URL download ──
-        if (!success && url.startsWith('blob:')) {
-          updateStatus(`  [${num}] ⬇️ Download blob...`);
-          try {
-            const blob = await fetchVideoBlob(url);
-            if (blob) {
-              if (useFolder) {
-                await saveToFolder(dirHandle, filename, blob);
-                updateStatus(`  [${num}] ✅ ${folderName}/${filename}`);
-                success = true;
-              } else {
-                const blobUrl = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = blobUrl;
-                a.download = filename;
-                a.style.display = 'none';
-                document.body.appendChild(a);
-                a.click();
-                setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(blobUrl); }, 1000);
-                updateStatus(`  [${num}] ✅ ${filename}`);
-                success = true;
-              }
-            }
-          } catch (err) {
-            console.warn(`  [${num}] Blob fetch failed: ${err.message}`);
-          }
-        }
+    updateStatus('🔍 Escaneando vídeos (do primeiro ao último)...');
 
-        // ── Strategy 3: Hover + native VEO3 download button ──
-        if (!success) {
-          updateStatus(`  [${num}] 🖱️ Hover + botão nativo...`);
-          video.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          await sleep(500);
+    // Process visible "Baixar" buttons at current scroll position
+    async function processVisibleBaixar(scrollPos) {
+      const baixarBtns = findBaixarButtons();
+      for (const btn of baixarBtns) {
+        const rect = btn.getBoundingClientRect();
+        // Must be roughly in viewport
+        if (rect.bottom < -100 || rect.top > window.innerHeight + 100) continue;
+        if (rect.width === 0 || rect.height === 0) continue;
 
-          // Try hovering and finding button up to 4 attempts
-          let downloadBtn = null;
-          for (let attempt = 0; attempt < 4; attempt++) {
-            await hoverOverVideo(video);
-            downloadBtn = findDownloadButtonNear(video);
-            if (downloadBtn) break;
-            await sleep(800);
-          }
+        // Dedup by approximate Y position in the full page (cards ~416px apart)
+        const yInPage = Math.round((rect.top + scrollPos) / 200);
+        if (processedSlots.has(yInPage)) continue;
+        processedSlots.add(yInPage);
+        processedSlots.add(yInPage - 1);
+        processedSlots.add(yInPage + 1);
 
-          if (downloadBtn) {
-            // Install interceptor to catch window.open with video URL
-            const restoreWindowOpen = installWindowOpenInterceptor(filename);
-            state.lastDownloadComplete = false;
+        videoIndex++;
+        const num = String(videoIndex).padStart(3, '0');
+        updateStatus(`  [${num}] 📹 Baixando...`);
 
-            // Human-like click
-            downloadBtn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
-            await sleep(50 + Math.random() * 80);
-            downloadBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-            await sleep(40 + Math.random() * 60);
-            downloadBtn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true }));
-            await sleep(20 + Math.random() * 40);
-            downloadBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
-            await sleep(10 + Math.random() * 30);
-            downloadBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-            await sleep(1500);
-
-            // Check quality menu
-            const qualityTexts = ['Tamanho original', 'Original size', 'Original quality', '720p', '1080p', 'MP4'];
-            let qualityOption = null;
-            for (const text of qualityTexts) {
-              qualityOption = findQualityOption(text);
-              if (qualityOption) break;
-            }
-
-            if (qualityOption) {
-              const anchor = qualityOption.tagName === 'A' ? qualityOption : qualityOption.closest('a');
-              const href = anchor?.href;
-              if (href && !href.startsWith('javascript:') && !href.startsWith('#')) {
-                restoreWindowOpen();
-                if (useFolder) {
-                  const blob = await fetchVideoBlob(href);
-                  if (blob && blob.size > 0) {
-                    await saveToFolder(dirHandle, filename, blob);
-                    success = true;
-                  }
-                }
-                if (!success) {
-                  await triggerNativeDownload(href, filename);
-                  success = state.lastDownloadComplete;
-                }
-              } else {
-                qualityOption.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                await sleep(2000);
-                restoreWindowOpen();
-                success = state.lastDownloadComplete;
-              }
-            } else {
-              // No quality menu — direct click may have triggered download
-              await sleep(1500);
-              restoreWindowOpen();
-              success = state.lastDownloadComplete;
-
-              // Check if video src appeared after clicking
-              if (!success) {
-                const freshSrc = video.src || video.currentSrc || '';
-                if (freshSrc && freshSrc.startsWith('http')) {
-                  if (useFolder) {
-                    const blob = await fetchVideoBlob(freshSrc);
-                    if (blob && blob.size > 0) {
-                      await saveToFolder(dirHandle, filename, blob);
-                      success = true;
-                    }
-                  }
-                  if (!success) {
-                    await triggerNativeDownload(freshSrc, filename);
-                    success = state.lastDownloadComplete;
-                  }
-                }
-              }
-            }
-
-            if (success) {
-              updateStatus(`  [${num}] ✅ ${useFolder ? folderName + '/' : ''}${filename}`);
-            } else {
-              updateStatus(`  [${num}] ⚠️ Download não confirmado`);
-            }
-          } else {
-            updateStatus(`  [${num}] ❌ Botão de download não encontrado`);
-          }
-        }
-
-        if (success) {
-          downloaded++;
-        } else {
+        try {
+          const ok = await downloadOneVideo(btn, videoIndex);
+          if (ok) downloaded++;
+          else failed++;
+        } catch (err) {
+          console.error(`📹 [${num}] Error:`, err);
+          updateStatus(`  [${num}] ❌ Erro: ${err.message}`);
           failed++;
+          await dismissMenus();
         }
 
-        // Delay between downloads
-        if (i < downloadList.length - 1) {
-          await sleep(1200);
-        }
-      } catch (err) {
-        updateStatus(`  [${num}] ❌ Erro: ${err.message}`);
-        failed++;
+        // Wait between downloads
+        await sleep(2000);
+
+        // Re-scroll (clicking/menus may have shifted the page)
+        scrollTarget.scrollTop = scrollPos;
+        if (!scrollContainer) window.scrollTo({ top: scrollPos, behavior: 'instant' });
+        await sleep(500);
       }
     }
 
-    updateStatus('────────────────────');
-    updateStatus(`📥 Resultado: ${downloaded} baixados | ${failed} falharam`);
-    if (downloaded > 0) {
-      if (useFolder) {
-        updateStatus(`📂 Arquivos em: ${folderName}/001.mp4, 002.mp4, etc`);
-      } else {
-        updateStatus(`📂 Arquivos: ${filePrefix}001.mp4, etc`);
+    // Single pass: bottom → top (oldest to newest = prompt order)
+    for (let pos = finalMaxHeight; pos >= 0; pos -= scrollStep) {
+      scrollTarget.scrollTop = pos;
+      if (!scrollContainer) window.scrollTo({ top: pos, behavior: 'instant' });
+      await sleep(scrollWait);
+      await processVisibleBaixar(pos);
+    }
+
+    // Extra pass: scroll back down slowly to catch any missed (virtual scrolling gaps)
+    const beforePass2 = videoIndex;
+    console.log(`📹 Pass 1 done: ${videoIndex} videos. Checking for missed...`);
+    for (let pos = 0; pos <= finalMaxHeight; pos += scrollStep) {
+      scrollTarget.scrollTop = pos;
+      if (!scrollContainer) window.scrollTo({ top: pos, behavior: 'instant' });
+      await sleep(scrollWait);
+      await processVisibleBaixar(pos);
+    }
+    if (videoIndex > beforePass2) {
+      console.log(`📹 Pass 2 found ${videoIndex - beforePass2} additional videos`);
+    }
+
+    // ── STEP 4: Restore view ──
+    if (clickedFilter) {
+      const btns = document.querySelectorAll('button');
+      for (const btn of btns) {
+        const icon = btn.querySelector(ICON_SELECTOR);
+        const iconText = icon ? (icon.textContent || '').trim().toLowerCase() : '';
+        if (iconText === 'dashboard') {
+          btn.click();
+          await sleep(800);
+          break;
+        }
       }
+    }
+    if (scrollContainer) scrollContainer.scrollTop = savedScroll;
+    else window.scrollTo({ top: savedScroll, behavior: 'instant' });
+
+    // ── STEP 5: Report results ──
+    updateStatus('────────────────────');
+    updateStatus(`📥 Resultado: ${downloaded} baixados | ${failed} falharam | ${videoIndex} encontrados`);
+    if (downloaded > 0) {
+      updateStatus(`📂 Arquivos na pasta de Downloads do navegador`);
     }
 
     // Re-enable button
