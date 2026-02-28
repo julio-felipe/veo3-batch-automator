@@ -4804,7 +4804,7 @@
             props.onClick({
               type: 'click', target: btn, currentTarget: el,
               clientX: cx, clientY: cy, pageX: cx, pageY: cy,
-              preventDefault: () => {}, stopPropagation: () => {},
+              preventDefault: () => { }, stopPropagation: () => { },
               nativeEvent: new MouseEvent('click', evtOpts)
             });
             return true;
@@ -4985,21 +4985,54 @@
     return true;
   }
 
-  // ═══ Main video download function — scroll bottom→top + click "Baixar" → 720p ═══
+  // ═══ Main video download function — collect URLs via scroll, resolve TRPC, fetch .mp4 ═══
   async function downloadPageVideos() {
     const dlPageBtn = document.getElementById('veo3-dl-page-btn');
+    const folderInput = document.getElementById('veo3-folder-name');
+    const rawFolderName = (folderInput?.value || '').trim();
+    const folderName = rawFolderName.replace(/[<>:"/\\|?*]/g, '').trim();
 
     updateStatus('────────────────────');
-    updateStatus('📹 Download de vídeos (Baixar → 720p)');
-    updateStatus('📂 Arquivos vão para a pasta de Downloads do navegador');
 
-    // Disable button during download
+    // ── STEP 1: Ask folder FIRST (must be in user gesture context) ──
+    let dirHandle = null;
+    if (window.showDirectoryPicker) {
+      try {
+        if (folderName) {
+          updateStatus(`📂 Selecione onde criar a pasta "${folderName}"...`);
+        } else {
+          updateStatus(`📂 Selecione a pasta para salvar os vídeos...`);
+        }
+        const parentDir = await window.showDirectoryPicker({ mode: 'readwrite' });
+        if (folderName) {
+          dirHandle = await parentDir.getDirectoryHandle(folderName, { create: true });
+          updateStatus(`📂 Pasta "${folderName}" criada!`);
+        } else {
+          dirHandle = parentDir;
+          updateStatus(`📂 Pasta selecionada!`);
+        }
+      } catch (err) {
+        if (err.name === 'AbortError') {
+          updateStatus('⚠️ Seleção de pasta cancelada.');
+          return;
+        }
+        console.warn(`⚠️ File System API failed: ${err.message}. Falling back to downloads.`);
+        dirHandle = null;
+      }
+    }
+
+    const useFolder = !!dirHandle;
+    const filePrefix = (!useFolder && folderName) ? `${folderName}-` : (!useFolder ? 'veo3-page-' : '');
+
+    // ── STEP 2: Scan page for video URLs via scroll ──
+    updateStatus('🔍 Escaneando TODA a página por vídeos...');
+
     if (dlPageBtn) {
       dlPageBtn.disabled = true;
       dlPageBtn.style.opacity = '0.5';
     }
 
-    // ── STEP 1: Click "View videos" filter to show only videos ──
+    // Click "View videos" filter
     let clickedFilter = false;
     const allPageBtns = document.querySelectorAll('button');
     for (const btn of allPageBtns) {
@@ -5015,7 +5048,7 @@
       }
     }
 
-    // ── STEP 2: Find scrollable container ──
+    // Find scrollable container
     let scrollContainer = null;
     const divs = document.querySelectorAll('div, main, section');
     for (const el of divs) {
@@ -5031,110 +5064,138 @@
 
     const scrollTarget = scrollContainer || document.documentElement;
     const savedScroll = scrollContainer ? scrollContainer.scrollTop : window.scrollY;
+    const maxH = scrollTarget.scrollHeight;
+    const step = 350;
 
-    // ── STEP 3: Scroll bottom→top (prompt order: oldest first) ──
-    const processedSlots = new Set();
-    let downloaded = 0;
-    let failed = 0;
-    let videoIndex = 0;
+    // Collect video URLs via scroll (2 passes: down + up)
+    const collectedUrls = new Map(); // url → true
 
-    const scrollStep = 350;
-    const scrollWait = 1200;
-
-    // Go to bottom first (oldest/first prompt is at the bottom)
-    const maxHeight = scrollTarget.scrollHeight;
-    scrollTarget.scrollTop = maxHeight;
-    if (!scrollContainer) window.scrollTo({ top: maxHeight, behavior: 'instant' });
-    await sleep(1500);
-
-    // Recalculate maxHeight after scrolling (virtual scroll may update DOM)
-    const finalMaxHeight = scrollTarget.scrollHeight;
-
-    updateStatus('🔍 Escaneando vídeos (do primeiro ao último)...');
-
-    // Process visible "Baixar" buttons at current scroll position
-    async function processVisibleBaixar(scrollPos) {
-      const baixarBtns = findBaixarButtons();
-      for (const btn of baixarBtns) {
-        const rect = btn.getBoundingClientRect();
-        // Must be roughly in viewport
-        if (rect.bottom < -100 || rect.top > window.innerHeight + 100) continue;
-        if (rect.width === 0 || rect.height === 0) continue;
-
-        // Dedup by approximate Y position in the full page (cards ~416px apart)
-        const yInPage = Math.round((rect.top + scrollPos) / 200);
-        if (processedSlots.has(yInPage)) continue;
-        processedSlots.add(yInPage);
-        processedSlots.add(yInPage - 1);
-        processedSlots.add(yInPage + 1);
-
-        videoIndex++;
-        const num = String(videoIndex).padStart(3, '0');
-        updateStatus(`  [${num}] 📹 Baixando...`);
-
-        try {
-          const ok = await downloadOneVideo(btn, videoIndex);
-          if (ok) downloaded++;
-          else failed++;
-        } catch (err) {
-          console.error(`📹 [${num}] Error:`, err);
-          updateStatus(`  [${num}] ❌ Erro: ${err.message}`);
-          failed++;
-          await dismissMenus();
-        }
-
-        // Wait between downloads
-        await sleep(2000);
-
-        // Re-scroll (clicking/menus may have shifted the page)
-        scrollTarget.scrollTop = scrollPos;
-        if (!scrollContainer) window.scrollTo({ top: scrollPos, behavior: 'instant' });
-        await sleep(500);
+    function collectVisibleVideoUrls() {
+      let n = 0;
+      const videos = document.querySelectorAll('video');
+      for (const video of videos) {
+        if (video.closest('#veo3-panel, #veo3-bubble')) continue;
+        const url = video.currentSrc || video.src || '';
+        if (!url || collectedUrls.has(url)) continue;
+        const rect = video.getBoundingClientRect();
+        if (rect.width < 50 && rect.height < 50 && video.videoWidth < 50) continue;
+        collectedUrls.set(url, true);
+        n++;
       }
+      return n;
     }
 
-    // Single pass: bottom → top (oldest to newest = prompt order)
-    for (let pos = finalMaxHeight; pos >= 0; pos -= scrollStep) {
+    scrollTarget.scrollTop = 0;
+    if (!scrollContainer) window.scrollTo({ top: 0, behavior: 'instant' });
+    await sleep(500);
+    collectVisibleVideoUrls();
+
+    // Pass 1: down
+    for (let pos = 0; pos <= maxH; pos += step) {
       scrollTarget.scrollTop = pos;
       if (!scrollContainer) window.scrollTo({ top: pos, behavior: 'instant' });
-      await sleep(scrollWait);
-      await processVisibleBaixar(pos);
+      await sleep(800);
+      const n = collectVisibleVideoUrls();
+      if (n > 0) console.log(`📹 pos=${pos}: +${n} (total: ${collectedUrls.size})`);
     }
 
-    // Extra pass: scroll back down slowly to catch any missed (virtual scrolling gaps)
-    const beforePass2 = videoIndex;
-    console.log(`📹 Pass 1 done: ${videoIndex} videos. Checking for missed...`);
-    for (let pos = 0; pos <= finalMaxHeight; pos += scrollStep) {
+    // Pass 2: up
+    for (let pos = maxH; pos >= 0; pos -= step) {
       scrollTarget.scrollTop = pos;
       if (!scrollContainer) window.scrollTo({ top: pos, behavior: 'instant' });
-      await sleep(scrollWait);
-      await processVisibleBaixar(pos);
-    }
-    if (videoIndex > beforePass2) {
-      console.log(`📹 Pass 2 found ${videoIndex - beforePass2} additional videos`);
+      await sleep(800);
+      const n = collectVisibleVideoUrls();
+      if (n > 0) console.log(`📹 pos=${pos}: +${n} (total: ${collectedUrls.size})`);
     }
 
-    // ── STEP 4: Restore view ──
+    // Restore view
     if (clickedFilter) {
       const btns = document.querySelectorAll('button');
       for (const btn of btns) {
         const icon = btn.querySelector(ICON_SELECTOR);
         const iconText = icon ? (icon.textContent || '').trim().toLowerCase() : '';
-        if (iconText === 'dashboard') {
-          btn.click();
-          await sleep(800);
-          break;
-        }
+        if (iconText === 'dashboard') { btn.click(); await sleep(800); break; }
       }
     }
     if (scrollContainer) scrollContainer.scrollTop = savedScroll;
     else window.scrollTo({ top: savedScroll, behavior: 'instant' });
 
-    // ── STEP 5: Report results ──
+    const videoUrls = [...collectedUrls.keys()];
+    console.log(`📹 Found ${videoUrls.length} video URLs`);
+
+    if (videoUrls.length === 0) {
+      updateStatus('⚠️ Nenhum vídeo encontrado na página.');
+      if (dlPageBtn) { dlPageBtn.disabled = false; dlPageBtn.style.opacity = '1'; }
+      return;
+    }
+
+    updateStatus(`📹 ${videoUrls.length} vídeo(s) encontrados — baixando como .mp4...`);
+
+    // ── STEP 3: Download each video (resolve TRPC URL → fetch blob → save) ──
+    let downloaded = 0;
+    let failed = 0;
+
+    for (let i = 0; i < videoUrls.length; i++) {
+      const originalUrl = videoUrls[i];
+      const num = String(i + 1).padStart(3, '0');
+      const filename = useFolder ? `${num}.mp4` : `${filePrefix}${num}.mp4`;
+
+      updateStatus(`  [${num}] ⬇️ Baixando...`);
+
+      try {
+        // Step A: Resolve TRPC redirect → get direct Google Storage URL
+        let downloadUrl = originalUrl;
+        if (originalUrl.includes('getMediaUrlRedirect')) {
+          downloadUrl = await resolveMediaRedirectUrl(originalUrl);
+          console.log(`📹 [${num}] Resolved: ${downloadUrl.substring(0, 80)}`);
+        }
+
+        // Step B: Fetch the actual video blob
+        const blob = await fetchVideoBlob(downloadUrl);
+
+        if (blob && blob.size > 0) {
+          // Step C: Save to folder or via <a download>
+          if (useFolder) {
+            await saveToFolder(dirHandle, filename, blob);
+            updateStatus(`  [${num}] ✅ ${folderName}/${filename} (${(blob.size / 1024 / 1024).toFixed(1)}MB)`);
+          } else {
+            const blobUrl = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = blobUrl;
+            a.download = filename;
+            a.style.display = 'none';
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(blobUrl); }, 2000);
+            updateStatus(`  [${num}] ✅ ${filename} (${(blob.size / 1024 / 1024).toFixed(1)}MB)`);
+          }
+          downloaded++;
+        } else {
+          // Fallback: <a download> with resolved URL (browser handles the rest)
+          console.warn(`📹 [${num}] Fetch failed, trying <a download>...`);
+          downloadViaAnchor(downloadUrl, filename);
+          updateStatus(`  [${num}] ⚠️ Download tentado via link: ${filename}`);
+          downloaded++; // Optimistic
+        }
+      } catch (err) {
+        console.error(`📹 [${num}] Error:`, err);
+        updateStatus(`  [${num}] ❌ Erro: ${err.message}`);
+        failed++;
+      }
+
+      // Small delay between downloads
+      if (i < videoUrls.length - 1) await sleep(1500);
+    }
+
+    // ── STEP 4: Report results ──
     updateStatus('────────────────────');
-    updateStatus(`📥 Resultado: ${downloaded} baixados | ${failed} falharam | ${videoIndex} encontrados`);
+    updateStatus(`📥 Resultado: ${downloaded} baixados | ${failed} falharam`);
     if (downloaded > 0) {
-      updateStatus(`📂 Arquivos na pasta de Downloads do navegador`);
+      if (useFolder) {
+        updateStatus(`📂 Arquivos em: ${folderName}/001.mp4, etc`);
+      } else {
+        updateStatus(`📂 Arquivos: ${filePrefix}001.mp4, etc`);
+      }
     }
 
     // Re-enable button
