@@ -2951,17 +2951,12 @@
       console.log(`🎭 Selecting characters via ⋮ → Incluir: ${characterNames.join(', ')}`);
 
       // ═══════════════════════════════════════════════════════════════════════
-      // Scroll the page to the BOTTOM before searching for character cards.
+      // PROGRESSIVE SCROLL to bottom — ensures lazy-loaded content appears.
       // In VEO3 Flow, the timeline shows newest at top, original character
-      // reference images at bottom. After many generations, the original
-      // cards get pushed off-screen. We need to scroll down to find them.
+      // reference images at bottom. We scroll in steps to trigger loading.
       // ═══════════════════════════════════════════════════════════════════════
-      console.log('🎭 Scrolling to bottom to find original character references...');
-      const scrollContainer = document.querySelector('[class*="timeline"], [class*="scroll"], main, [role="main"]')
-        || document.scrollingElement || document.documentElement;
 
-      // Try scrolling the main content area to the very bottom
-      // First, try to find the actual scrollable container
+      // Find the scrollable container
       let scroller = null;
       const candidates = document.querySelectorAll('div');
       for (const div of candidates) {
@@ -2975,17 +2970,34 @@
         }
       }
 
-      if (scroller) {
-        console.log(`🎭 Found scrollable container: <${scroller.tagName}> scrollHeight=${scroller.scrollHeight}`);
-        scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' });
-      } else {
-        // Fallback: scroll the entire page
-        window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
+      const scrollTarget = scroller || document.scrollingElement || document.documentElement;
+      const maxScroll = scrollTarget.scrollHeight - scrollTarget.clientHeight;
+      console.log(`🎭 Scroll target: <${scrollTarget.tagName || 'HTML'}> scrollHeight=${scrollTarget.scrollHeight} maxScroll=${maxScroll}`);
+
+      // Progressive scroll: go in 3 steps to trigger lazy loading
+      if (maxScroll > 200) {
+        for (let step = 1; step <= 3; step++) {
+          const target = Math.min(maxScroll, (maxScroll * step) / 3);
+          scrollTarget.scrollTop = target;
+          await sleep(400);
+        }
+        // Final: ensure we're at the very bottom
+        scrollTarget.scrollTop = maxScroll;
+        await sleep(600);
       }
-      await sleep(800);
+      // Also scroll the window as fallback
+      window.scrollTo(0, document.documentElement.scrollHeight);
+      await sleep(400);
 
       // Find character cards on the page by @Name: patterns
-      const cardMap = findCharacterCards();
+      let cardMap = findCharacterCards();
+
+      if (cardMap.size === 0) {
+        // Retry: maybe content is still loading — wait and try again
+        console.log('🎭 No cards found, retrying after additional wait...');
+        await sleep(1000);
+        cardMap = findCharacterCards();
+      }
 
       if (cardMap.size === 0) {
         console.warn('⚠️ No @Name: character cards found on page');
@@ -3007,13 +3019,31 @@
           }
         }
 
+        // RETRY: if card not found, re-scroll to bottom and re-scan
         if (!card) {
-          console.warn(`🎭 @${name}: card not found on page`);
+          console.log(`🎭 @${name}: not found in first scan, re-scrolling to bottom...`);
+          scrollTarget.scrollTop = maxScroll;
+          window.scrollTo(0, document.documentElement.scrollHeight);
+          await sleep(800);
+          const retryMap = findCharacterCards();
+          card = retryMap.get(name);
+          if (!card) {
+            for (const [key, c] of retryMap) {
+              if (key.startsWith(name) || name.startsWith(key) || key.includes(name) || name.includes(key)) {
+                card = c;
+                break;
+              }
+            }
+          }
+        }
+
+        if (!card) {
+          console.warn(`🎭 @${name}: card not found on page after retry`);
           updateStatus(`🎭 ⚠️ @${name}: não encontrado na página`);
           continue;
         }
 
-        // Scroll card into view (the card itself, not the page bottom)
+        // Scroll specific card into view
         card.scrollIntoView({ behavior: 'smooth', block: 'center' });
         await sleep(500);
 
