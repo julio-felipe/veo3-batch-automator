@@ -5076,9 +5076,8 @@
       for (const video of videos) {
         if (video.closest('#veo3-panel, #veo3-bubble')) continue;
         const url = video.currentSrc || video.src || '';
+        // Skip if no url or already collected (some lazy-loaded have 0x0 but valid src)
         if (!url || collectedUrls.has(url)) continue;
-        const rect = video.getBoundingClientRect();
-        if (rect.width < 50 && rect.height < 50 && video.videoWidth < 50) continue;
         collectedUrls.set(url, true);
         n++;
       }
