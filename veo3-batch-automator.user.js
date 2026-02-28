@@ -4259,32 +4259,131 @@
   // PAGE VIDEO SCAN & DOWNLOAD (independent of batch flow)
   // ============================================================================
 
-  function scanPageVideos() {
-    const videos = document.querySelectorAll('video');
-    updateStatus('────────────────────');
-    updateStatus(`🔍 Escaneando página...`);
+  // Scroll through the entire page to collect ALL video elements
+  // VEO3 uses virtual scrolling — only a few items are rendered at a time.
+  // This mirrors the same approach as scrollToCollectAllImages.
+  async function scrollToCollectAllVideos() {
+    const collected = new Map(); // src → video element (deduped by src)
 
-    if (videos.length === 0) {
+    // Helper: collect all videos currently in DOM
+    function collectVisibleVideos() {
+      const videos = document.querySelectorAll('video');
+      let newCount = 0;
+      for (const video of videos) {
+        if (video.closest('#veo3-panel, #veo3-bubble')) continue;
+        const url = video.currentSrc || video.src || '';
+        if (!url) continue;
+        const rect = video.getBoundingClientRect();
+        // Skip tiny/hidden videos
+        if (rect.width < 50 && rect.height < 50 && video.videoWidth < 50) continue;
+        if (!collected.has(url)) {
+          collected.set(url, {
+            element: video,
+            url: url,
+            width: video.videoWidth || rect.width || 0,
+            height: video.videoHeight || rect.height || 0,
+            duration: isNaN(video.duration) ? 0 : video.duration
+          });
+          newCount++;
+        }
+      }
+      return newCount;
+    }
+
+    // Find the scrollable container (same logic as images)
+    let scrollContainer = null;
+    const allElements = document.querySelectorAll('div, main, section');
+    for (const el of allElements) {
+      if (el.closest('#veo3-panel, #veo3-bubble')) continue;
+      const style = getComputedStyle(el);
+      if ((style.overflowY === 'auto' || style.overflowY === 'scroll') &&
+        el.scrollHeight > el.clientHeight + 200 &&
+        el.clientHeight > 300) {
+        if (!scrollContainer || el.scrollHeight > scrollContainer.scrollHeight) {
+          scrollContainer = el;
+        }
+      }
+    }
+
+    if (scrollContainer) {
+      console.log(`📹 scrollToCollectAllVideos: found scrollable container scrollHeight=${scrollContainer.scrollHeight}`);
+    } else {
+      console.log(`📹 scrollToCollectAllVideos: no inner scrollable found, using document`);
+    }
+
+    // Save current scroll positions
+    const savedContainerScroll = scrollContainer ? scrollContainer.scrollTop : 0;
+    const savedWindowScroll = window.scrollY;
+
+    // Collect initial videos
+    collectVisibleVideos();
+
+    const target = scrollContainer || document.documentElement;
+    const maxHeight = target.scrollHeight;
+    const scrollStep = 400;
+    const viewportHeight = target.clientHeight || window.innerHeight;
+
+    // Scroll to top first
+    target.scrollTop = 0;
+    if (!scrollContainer) window.scrollTo({ top: 0, behavior: 'instant' });
+    await sleep(400);
+    collectVisibleVideos();
+
+    console.log(`📹 scrollToCollectAllVideos: scrolling ${maxHeight}px in ${scrollStep}px steps...`);
+
+    // Scroll down collecting videos
+    let noNewCount = 0;
+    for (let pos = 0; pos <= maxHeight; pos += scrollStep) {
+      target.scrollTop = pos;
+      if (!scrollContainer) window.scrollTo({ top: pos, behavior: 'instant' });
+      await sleep(300);
+
+      const newFound = collectVisibleVideos();
+      if (newFound > 0) {
+        noNewCount = 0;
+        console.log(`📹 pos=${pos}: +${newFound} videos (total: ${collected.size})`);
+      } else {
+        noNewCount++;
+      }
+
+      // Stop if no new videos found in 15 consecutive steps
+      if (noNewCount > 15 && pos > viewportHeight * 2) break;
+    }
+
+    // Restore scroll positions
+    if (scrollContainer) {
+      scrollContainer.scrollTop = savedContainerScroll;
+    }
+    window.scrollTo({ top: savedWindowScroll, behavior: 'instant' });
+    await sleep(300);
+
+    console.log(`📹 scrollToCollectAllVideos: found ${collected.size} unique videos total`);
+    return [...collected.values()];
+  }
+
+  async function scanPageVideos() {
+    updateStatus('────────────────────');
+    updateStatus(`🔍 Escaneando TODA a página (com scroll)...`);
+
+    const videoEntries = await scrollToCollectAllVideos();
+
+    if (videoEntries.length === 0) {
       updateStatus('⚠️ Nenhum <video> encontrado na página.');
       return;
     }
 
-    updateStatus(`📹 ${videos.length} vídeo(s) encontrado(s):`);
+    updateStatus(`📹 ${videoEntries.length} vídeo(s) encontrado(s):`);
 
-    videos.forEach((video, idx) => {
+    videoEntries.forEach((entry, idx) => {
       const num = String(idx + 1).padStart(2, '0');
-      const src = video.src || '';
-      const currentSrc = video.currentSrc || '';
-      const url = currentSrc || src;
-      const w = video.videoWidth || video.width || 0;
-      const h = video.videoHeight || video.height || 0;
-      const dur = isNaN(video.duration) ? '?' : video.duration.toFixed(1);
+      const url = entry.url;
 
       let srcType = 'sem src';
       if (url.startsWith('blob:')) srcType = 'blob';
       else if (url.startsWith('http')) srcType = 'HTTP';
 
-      const dims = (w && h) ? `${w}x${h}` : '?';
+      const dims = (entry.width && entry.height) ? `${entry.width}x${entry.height}` : '?';
+      const dur = entry.duration ? entry.duration.toFixed(1) : '?';
       updateStatus(`  [${num}] ${srcType} | ${dims} | ${dur}s`);
       if (url) {
         console.log(`  [${num}] URL: ${url.substring(0, 120)}`);
@@ -4296,7 +4395,7 @@
     // Update video count badge in panel
     const countBadge = document.getElementById('veo3-video-count-badge');
     if (countBadge) {
-      countBadge.textContent = `📹 ${videos.length} vídeo(s)`;
+      countBadge.textContent = `📹 ${videoEntries.length} vídeo(s)`;
       countBadge.style.color = 'white';
       countBadge.style.background = 'rgba(0, 188, 212, 0.3)';
     }
@@ -4305,7 +4404,7 @@
     const badge = document.getElementById('veo3-badge');
     if (badge && !state.isRunning) {
       badge.style.display = 'flex';
-      badge.textContent = `📹${videos.length}`;
+      badge.textContent = `📹${videoEntries.length}`;
       badge.style.background = '#00BCD4';
     }
   }
@@ -4402,7 +4501,6 @@
 
   async function downloadPageVideos() {
     const dlPageBtn = document.getElementById('veo3-dl-page-btn');
-    const videos = document.querySelectorAll('video');
 
     // Get folder name
     const folderInput = document.getElementById('veo3-folder-name');
@@ -4411,11 +4509,40 @@
     const folderName = rawFolderName.replace(/[<>:"/\\|?*]/g, '').trim();
 
     updateStatus('────────────────────');
+    updateStatus('🔍 Escaneando TODA a página por vídeos...');
+
+    // Scroll the entire page to find ALL videos (including off-screen)
+    const videoEntries = await scrollToCollectAllVideos();
+
+    // Also grab any videos currently visible (in case scroll missed some)
+    const currentVideos = document.querySelectorAll('video');
+    const allVideoElements = [];
+    const seenUrls = new Set();
+
+    // Add scroll-collected videos first
+    for (const entry of videoEntries) {
+      if (!seenUrls.has(entry.url)) {
+        seenUrls.add(entry.url);
+        allVideoElements.push(entry.element);
+      }
+    }
+    // Add any extra visible videos
+    for (const v of currentVideos) {
+      const url = v.currentSrc || v.src || '';
+      if (url && !seenUrls.has(url)) {
+        seenUrls.add(url);
+        allVideoElements.push(v);
+      }
+    }
+
+    const videos = allVideoElements;
 
     if (videos.length === 0) {
       updateStatus('⚠️ Nenhum <video> encontrado na página.');
       return;
     }
+
+    updateStatus(`📹 ${videos.length} vídeo(s) encontrados, preparando download...`);
 
     // Disable button during download
     if (dlPageBtn) {
