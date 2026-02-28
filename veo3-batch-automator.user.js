@@ -5721,120 +5721,179 @@
     const total = state.completedVideos.length;
     updateStatus(`📥 FASE 2: Baixando ${total} vídeos...`);
 
+    // ── STEP 1: Ask for folder (user gesture context) ──
+    let dirHandle = null;
+    const folderInput = document.getElementById('veo3-folder-name');
+    const rawFolderName = (folderInput?.value || '').trim();
+    const folderName = rawFolderName.replace(/[<>:"/\\|?*]/g, '').trim() || 'veo3-batch';
+
+    if (window.showDirectoryPicker) {
+      try {
+        updateStatus(`📂 Selecione onde criar a pasta "${folderName}"...`);
+        const parentDir = await window.showDirectoryPicker({ mode: 'readwrite' });
+        dirHandle = await parentDir.getDirectoryHandle(folderName, { create: true });
+        updateStatus(`📂 Pasta "${folderName}" criada!`);
+      } catch (err) {
+        if (err.name === 'AbortError') {
+          updateStatus('⚠️ Seleção de pasta cancelada.');
+          state.isRunning = false;
+          state.phase = 'idle';
+          document.getElementById('veo3-start-btn').disabled = false;
+          document.getElementById('veo3-download-all-btn').disabled = false;
+          document.getElementById('veo3-download-all-btn').style.opacity = '1';
+          return;
+        }
+        console.warn(`⚠️ File System API failed: ${err.message}. Falling back to downloads.`);
+        dirHandle = null;
+      }
+    }
+
+    const useFolder = !!dirHandle;
+    const filePrefix = useFolder ? '' : `${folderName}-`;
+
     const downloadStartTime = Date.now();
 
     try {
-      for (let i = 0; i < state.completedVideos.length; i++) {
-        if (!state.isRunning) break;
+      // ── STEP 2: Build download list (dedup by URL) ──
+      const hasStoredUrls = state.completedVideos.some(e => e.videoUrl && e.videoUrl.length > 10);
+      let downloadList = [];
 
-        while (state.isPaused && state.isRunning) {
-          await sleep(100);
+      if (hasStoredUrls) {
+        // Use URLs captured during Phase 1
+        const seenUrls = new Set();
+        for (const entry of state.completedVideos) {
+          let url = entry.videoUrl || '';
+          // Try video element as fallback
+          if (!url) {
+            const el = entry.videoElement;
+            url = el ? (el.currentSrc || el.src || '') : '';
+          }
+          if (url && !seenUrls.has(url)) {
+            seenUrls.add(url);
+            downloadList.push({ index: entry.index, prompt: entry.prompt, url });
+          } else if (!url) {
+            console.warn(`📥 Video ${entry.index}: no URL, skipping`);
+          } else {
+            console.warn(`📥 Video ${entry.index}: duplicate URL, skipping`);
+          }
         }
+        updateStatus(`📹 ${downloadList.length} URLs únicas de ${total} gerados`);
+      } else {
+        // No stored URLs — scan page (like downloadPageVideos)
+        updateStatus('🔍 URLs expiradas, escaneando a página...');
+
+        let scrollContainer = null;
+        const divs = document.querySelectorAll('div, main, section');
+        for (const el of divs) {
+          if (el.closest('#veo3-panel, #veo3-bubble')) continue;
+          const style = getComputedStyle(el);
+          if ((style.overflowY === 'auto' || style.overflowY === 'scroll') &&
+            el.scrollHeight > el.clientHeight + 200 && el.clientHeight > 300) {
+            if (!scrollContainer || el.scrollHeight > scrollContainer.scrollHeight) {
+              scrollContainer = el;
+            }
+          }
+        }
+
+        const scrollTarget = scrollContainer || document.documentElement;
+        const maxH = scrollTarget.scrollHeight;
+        const step = 350;
+        const scannedUrls = new Set();
+
+        function scanVisible() {
+          const videos = document.querySelectorAll('video');
+          for (const video of videos) {
+            if (video.closest('#veo3-panel, #veo3-bubble')) continue;
+            const url = video.currentSrc || video.src || '';
+            if (url) scannedUrls.add(url);
+          }
+        }
+
+        for (let pos = 0; pos <= maxH; pos += step) {
+          scrollTarget.scrollTop = pos;
+          if (!scrollContainer) window.scrollTo({ top: pos, behavior: 'instant' });
+          await sleep(800);
+          scanVisible();
+        }
+        for (let pos = maxH; pos >= 0; pos -= step) {
+          scrollTarget.scrollTop = pos;
+          if (!scrollContainer) window.scrollTo({ top: pos, behavior: 'instant' });
+          await sleep(800);
+          scanVisible();
+        }
+
+        const urls = [...scannedUrls].reverse(); // Reverse for prompt order
+        for (let i = 0; i < urls.length; i++) {
+          downloadList.push({ index: i + 1, prompt: `Video ${i + 1}`, url: urls[i] });
+        }
+        updateStatus(`📹 ${downloadList.length} vídeos encontrados via scan`);
+      }
+
+      if (downloadList.length === 0) {
+        updateStatus('⚠️ Nenhum vídeo encontrado para baixar.');
+        return;
+      }
+
+      // ── STEP 3: Download each video (resolve → fetch → save) ──
+      for (let i = 0; i < downloadList.length; i++) {
+        if (!state.isRunning) break;
+        while (state.isPaused && state.isRunning) { await sleep(100); }
         if (!state.isRunning) break;
 
-        const entry = state.completedVideos[i];
+        const entry = downloadList[i];
         const paddedNum = String(entry.index).padStart(3, '0');
-        state.currentIndex = i + 1;
-        state.lastDownloadComplete = false;
+        const filename = useFolder ? `${paddedNum}.mp4` : `${filePrefix}${paddedNum}.mp4`;
 
-        document.getElementById('veo3-current').textContent = `Baixando: ${i + 1}/${total}`;
-        updateStatus(`[${paddedNum}] Baixando vídeo...`);
+        document.getElementById('veo3-current').textContent = `Baixando: ${i + 1}/${downloadList.length}`;
+        updateStatus(`[${paddedNum}] ⬇️ Baixando...`);
 
         try {
-          const filename = `veo3-batch-${paddedNum}.mp4`;
-          let directDownloaded = false;
-
-          // =====================================================================
-          // STRATEGY A: Direct URL download (most reliable — no DOM needed)
-          // =====================================================================
-          if (entry.videoUrl && entry.videoUrl.length > 0) {
-            updateStatus(`[${paddedNum}] ⬇️ Download direto via URL...`);
-            try {
-              state.lastDownloadComplete = false;
-              await triggerNativeDownload(entry.videoUrl, filename);
-              if (state.lastDownloadComplete) {
-                directDownloaded = true;
-                console.log(`📥 [DL] ✅ URL download succeeded for ${paddedNum}`);
-              }
-            } catch (err) {
-              console.warn(`📥 [DL] URL download failed for ${paddedNum}: ${err.message}`);
-            }
+          // Resolve TRPC URL → direct Google Storage URL
+          let downloadUrl = entry.url;
+          if (downloadUrl.includes('getMediaUrlRedirect')) {
+            downloadUrl = await resolveMediaRedirectUrl(downloadUrl);
+            console.log(`📥 [${paddedNum}] Resolved: ${downloadUrl.substring(0, 80)}`);
           }
 
-          // =====================================================================
-          // STRATEGY B: Element-based download (fallback if URL unavailable/expired)
-          // =====================================================================
-          if (!directDownloaded) {
-            let targetVideo = entry.videoElement;
+          // Fetch video blob
+          const blob = await fetchVideoBlob(downloadUrl);
 
-            // Fallback: find by data attribute
-            if (!targetVideo || !targetVideo.isConnected) {
-              targetVideo = document.querySelector(`video[data-veo3-batch-index="${entry.index}"]`);
+          if (blob && blob.size > 0) {
+            if (useFolder) {
+              await saveToFolder(dirHandle, filename, blob);
+            } else {
+              const blobUrl = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = blobUrl;
+              a.download = filename;
+              a.style.display = 'none';
+              document.body.appendChild(a);
+              a.click();
+              setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(blobUrl); }, 2000);
             }
-
-            // Fallback: find by position (VEO3 shows newest first → reverse order)
-            if (!targetVideo) {
-              const allVideos = Array.from(document.querySelectorAll('video'));
-              const totalVideos = allVideos.length;
-              // VEO3 DOM order: [newest, ..., oldest] → reverse to [oldest, ..., newest]
-              const reversed = allVideos.slice().reverse();
-              if (reversed.length >= entry.index) {
-                targetVideo = reversed[entry.index - 1];
-                console.log(`📥 Video ${entry.index}: reversed position ${entry.index - 1} of ${totalVideos}`);
-              }
-            }
-
-            // Fallback: scroll page to load video into DOM
-            if (!targetVideo) {
-              targetVideo = await scrollToLoadVideo(entry.index);
-            }
-
-            if (!targetVideo) {
-              throw new Error('Vídeo não encontrado na página (mesmo após scroll)');
-            }
-
-            // Set as current target for clickDownloadButton
-            state.lastVideoElement = targetVideo;
-            state.videoCountBeforeGen = document.querySelectorAll('video').length;
-
-            await clickDownloadButton();
-          }
-
-          await sleep(1000);
-          const downloadConfirmed = directDownloaded || (await waitForDownloadCompletion());
-
-          const result = state.results.find(r => r.index === entry.index);
-          if (downloadConfirmed) {
             state.downloadedCount++;
-            if (result) {
-              result.status = 'ok';
-              result.filename = `${CONFIG.DOWNLOAD_FOLDER}-${paddedNum}.mp4`;
-            }
-            updateStatus(`[${paddedNum}] ✅ Baixado!`);
+            const result = state.results.find(r => r.index === entry.index);
+            if (result) { result.status = 'ok'; result.filename = filename; }
+            updateStatus(`[${paddedNum}] ✅ ${useFolder ? folderName + '/' : ''}${filename} (${(blob.size / 1024 / 1024).toFixed(1)}MB)`);
           } else {
-            if (result) {
-              result.status = 'download_unconfirmed';
-              result.error = 'Timeout - verifique manualmente';
-            }
-            updateStatus(`[${paddedNum}] ⚠️ Não confirmado — verifique na pasta Downloads`);
-          }
-
-          document.getElementById('veo3-downloaded').textContent =
-            `Gerados: ${total} | Baixados: ${state.downloadedCount}/${total}`;
-
-          if (i < state.completedVideos.length - 1) {
-            await sleep(1500); // Small delay between downloads
+            // Fallback: <a download>
+            downloadViaAnchor(downloadUrl, filename);
+            state.downloadedCount++;
+            const result = state.results.find(r => r.index === entry.index);
+            if (result) result.status = 'download_unconfirmed';
+            updateStatus(`[${paddedNum}] ⚠️ Download tentado via link: ${filename}`);
           }
         } catch (error) {
           const result = state.results.find(r => r.index === entry.index);
-          if (result) {
-            result.status = 'download_error';
-            result.error = error.message;
-          }
+          if (result) { result.status = 'download_error'; result.error = error.message; }
           updateStatus(`[${paddedNum}] ❌ Download falhou: ${error.message}`);
           console.error(`Download ${entry.index}:`, error);
-          await sleep(1000);
         }
+
+        document.getElementById('veo3-downloaded').textContent =
+          `Gerados: ${total} | Baixados: ${state.downloadedCount}/${downloadList.length}`;
+
+        if (i < downloadList.length - 1) await sleep(1500);
       }
 
       // Phase 2 summary
@@ -5848,19 +5907,16 @@
       updateStatus(`🎉 TUDO COMPLETO!`);
       updateStatus(`📥 Downloads: ${dlDuration}s | Total: ${totalDuration}s`);
       updateStatus(`✅ ${okCount} baixados${unconfirmedCount > 0 ? ` | ⚠️ ${unconfirmedCount} não confirmados` : ''} | ❌ ${errCount} erros`);
-      updateStatus('');
-      updateStatus('📂 Organizando arquivos...');
+      if (useFolder) {
+        updateStatus(`📂 Arquivos em: ${folderName}/001.mp4, 002.mp4, etc`);
+      } else {
+        updateStatus(`📂 Arquivos: ${filePrefix}001.mp4, etc`);
+      }
 
-      // Download manifest com instruções
+      updateStatus('📂 Organizando arquivos...');
       await sleep(1000);
       await downloadManifest();
       updateStatus('📄 Manifest baixado! (veo3-batch-MANIFEST.txt)');
-
-      updateStatus('');
-      updateStatus('📁 Seus arquivos estão em: Downloads/');
-      updateStatus('Procure por: veo3-batch-001.mp4, veo3-batch-002.mp4, etc');
-      updateStatus('');
-      updateStatus('💡 Veja o MANIFEST para instruções de organização');
 
       console.log('═'.repeat(50));
       console.log('📋 FINAL RESULTS:');
