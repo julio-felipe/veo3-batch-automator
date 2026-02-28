@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Veo3 Prompt Batch Automator
 // @namespace    https://synkra.io/
-// @version      1.5.0
+// @version      1.6.0
 // @description  Automate batch video generation in Google Veo 3.1 — Send All then Download All
 // @author       j. felipe
 // @match        https://labs.google/fx/pt/tools/flow/project/*
@@ -251,7 +251,7 @@
         padding: 12px 16px; cursor: grab; background: rgba(0,0,0,0.1);
         border-radius: 12px 12px 0 0; user-select: none;
       ">
-        <span style="font-weight: 600; font-size: 14px;">VEO3 Batch Automator <span style="font-size:10px;opacity:0.6">v1.3.0</span></span>
+        <span style="font-weight: 600; font-size: 14px;">VEO3 Batch Automator <span style="font-size:10px;opacity:0.6">v1.6.0</span></span>
         <div style="display: flex; gap: 8px;">
           <button id="veo3-minimize-btn" style="
             background: none; border: none; color: white; cursor: pointer;
@@ -290,7 +290,7 @@
           ">Detectando imagens...</div>
         </div>
         <div style="font-size: 10px; opacity: 0.6; padding: 0 2px; margin-bottom: 10px;">
-          &#128161; <code style="background: rgba(0,0,0,0.2); padding: 1px 4px; border-radius: 2px;">[CHARS: Bao]</code> personagens @Nome &#8226; <code style="background: rgba(0,0,0,0.2); padding: 1px 4px; border-radius: 2px;">[IMGS: macaw, 1]</code> imagens por t&#237;tulo/&#237;ndice
+          &#128161; <code style="background: rgba(0,0,0,0.2); padding: 1px 4px; border-radius: 2px;">[CHARS: Bao]</code> personagens @Nome &#8226; <code style="background: rgba(0,0,0,0.2); padding: 1px 4px; border-radius: 2px;">[IMGS: Bao, Monk]</code> imagens @Nome via &#8942;
         </div>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
           <button id="veo3-start-btn" style="
@@ -333,6 +333,13 @@
             border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px;
             transition: background 0.2s;
           ">&#128249; Baixar vídeos da página</button>
+        </div>
+        <div style="margin-bottom: 8px;">
+          <button id="veo3-dl-images-btn" style="
+            width: 100%; padding: 10px; background: #AB47BC; color: white; border: none;
+            border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px;
+            transition: background 0.2s;
+          ">&#128444; Baixar imagens da página</button>
         </div>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 15px;">
           <button id="veo3-pause-btn" style="
@@ -401,6 +408,7 @@
     const stopBtn = document.getElementById('veo3-stop-btn');
 
     const dlPageBtn = document.getElementById('veo3-dl-page-btn');
+    const dlImagesBtn = document.getElementById('veo3-dl-images-btn');
     const scanPageBtn = document.getElementById('veo3-scan-page-btn');
 
     startBtn.addEventListener('mouseenter', () => { startBtn.style.background = '#45a049'; });
@@ -409,6 +417,8 @@
     downloadAllBtn.addEventListener('mouseleave', () => { if (!downloadAllBtn.disabled) downloadAllBtn.style.background = '#2196F3'; });
     dlPageBtn.addEventListener('mouseenter', () => { if (!dlPageBtn.disabled) dlPageBtn.style.background = '#0097A7'; });
     dlPageBtn.addEventListener('mouseleave', () => { if (!dlPageBtn.disabled) dlPageBtn.style.background = '#00BCD4'; });
+    dlImagesBtn.addEventListener('mouseenter', () => { if (!dlImagesBtn.disabled) dlImagesBtn.style.background = '#8E24AA'; });
+    dlImagesBtn.addEventListener('mouseleave', () => { if (!dlImagesBtn.disabled) dlImagesBtn.style.background = '#AB47BC'; });
     // DIAGNOSTIC BUTTONS — light and deep page analysis
     const diagContainer = document.createElement('div');
     diagContainer.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;margin-bottom:2px';
@@ -443,6 +453,7 @@
     startBtn.addEventListener('click', startBatchProcess);
     downloadAllBtn.addEventListener('click', downloadAllVideos);
     dlPageBtn.addEventListener('click', downloadPageVideos);
+    dlImagesBtn.addEventListener('click', downloadPageImages);
     scanPageBtn.addEventListener('click', scanPageVideos);
     pauseBtn.addEventListener('click', togglePause);
     stopBtn.addEventListener('click', stopBatch);
@@ -624,9 +635,50 @@
       return el.closest('#veo3-panel, #veo3-bubble');
     }
 
-    // Strategy 1: Walk all text nodes looking for @Name: pattern
-    // VEO3 shows character descriptions like "@Bao: Majestic Bombay black cat..."
-    const walker = document.createTreeWalker(
+    // Helper: walk up from a text node to find the generation row container
+    function findRowContainer(startEl) {
+      let current = startEl;
+      for (let depth = 0; depth < 15 && current; depth++) {
+        const rect = current.getBoundingClientRect();
+        if (rect.width > 2500 || rect.height > 1000) break;
+
+        const hasImg = current.querySelector('img') || current.querySelector('[role="img"]');
+        const hasBg = current.style.backgroundImage && current.style.backgroundImage !== 'none';
+        const isCardSized = rect.width >= 80 && rect.height >= 80;
+
+        if ((hasImg || hasBg) && isCardSized) return current;
+        if (current.matches('[role="listitem"], [role="option"], [class*="card"], [class*="item"]') && isCardSized) return current;
+
+        current = current.parentElement;
+      }
+
+      // Last resort: find any ancestor with an image
+      let ancestor = startEl.parentElement;
+      for (let i = 0; i < 20 && ancestor; i++) {
+        const aRect = ancestor.getBoundingClientRect();
+        if (aRect.width > 2500 || aRect.height > 1000) break;
+        if (ancestor.querySelector('img') && aRect.height >= 80) return ancestor;
+        ancestor = ancestor.parentElement;
+      }
+
+      return startEl.closest('[class*="card"], [class*="item"], [class*="asset"]') || startEl;
+    }
+
+    // Helper: register a name→card mapping, preferring cards WITH images
+    function registerCard(name, card, source) {
+      const existing = nameToCard.get(name);
+      const existingHasImg = existing ? !!existing.querySelector('img') : false;
+      const newHasImg = !!card.querySelector('img');
+
+      if (!existing || (!existingHasImg && newHasImg)) {
+        nameToCard.set(name, card);
+        const cRect = card.getBoundingClientRect();
+        console.log(`🎭 ${existing ? 'Upgraded' : 'Found'} character card (${source}): @${name} → ${card.tagName}.${(card.className || '').toString().substring(0, 40)} ${Math.round(cRect.width)}x${Math.round(cRect.height)} img=${newHasImg}`);
+      }
+    }
+
+    // Strategy 1: Walk all text nodes looking for @Name pattern
+    const walker1 = document.createTreeWalker(
       document.body,
       NodeFilter.SHOW_TEXT,
       {
@@ -640,52 +692,57 @@
       }
     );
 
-    const atNamePattern = /@(\w[\w\s-]*?):/g;
+    const atNamePattern = /@(\w[\w-]*)\s*:?/g;
     let textNode;
-    while ((textNode = walker.nextNode())) {
+    while ((textNode = walker1.nextNode())) {
       const text = textNode.textContent;
       let match;
       atNamePattern.lastIndex = 0;
       while ((match = atNamePattern.exec(text))) {
         const name = match[1].trim().toLowerCase();
         if (name.length === 0 || name.length > 30) continue;
-
-        // Find the nearest card/image container by walking up from the text node
-        const el = textNode.parentElement;
-        let card = null;
-
-        let current = el;
-        for (let depth = 0; depth < 8 && current; depth++) {
-          const hasImg = current.querySelector('img') || current.querySelector('[role="img"]');
-          const hasBg = current.style.backgroundImage && current.style.backgroundImage !== 'none';
-          const rect = current.getBoundingClientRect();
-          const isCardSized = rect.width >= 80 && rect.height >= 80;
-
-          if ((hasImg || hasBg) && isCardSized) {
-            card = current;
-            break;
-          }
-
-          if (current.matches('[role="listitem"], [role="option"], [class*="card"], [class*="item"]') && isCardSized) {
-            card = current;
-            break;
-          }
-
-          current = current.parentElement;
-        }
-
-        if (!card) {
-          card = el.closest('[class*="card"], [class*="item"], [class*="asset"]') || el;
-        }
-
-        if (!nameToCard.has(name)) {
-          nameToCard.set(name, card);
-          console.log(`🎭 Found character card: @${name} → ${card.tagName}.${(card.className || '').toString().substring(0, 40)}`);
-        }
+        const card = findRowContainer(textNode.parentElement);
+        registerCard(name, card, '@pattern');
       }
     }
 
-    // Strategy 2: Also check aria-label and title attributes on images
+    // Strategy 2: Walk text nodes for Name_With_Underscore: [description] pattern
+    // VEO3 right panel shows character definitions as "King_Raja: [50-year-old..."
+    // without the @ prefix
+    const walker2 = document.createTreeWalker(
+      document.body,
+      NodeFilter.SHOW_TEXT,
+      {
+        acceptNode(node) {
+          const text = node.textContent || '';
+          if (!text.includes('_') || !text.includes(':')) return NodeFilter.FILTER_REJECT;
+          const parent = node.parentElement;
+          if (!parent || isOurs(parent)) return NodeFilter.FILTER_REJECT;
+          // Skip the prompt input area (textbox) — only search result descriptions
+          if (parent.closest('[role="textbox"], [contenteditable="true"], textarea')) return NodeFilter.FILTER_REJECT;
+          if (parent.offsetParent === null && parent.style.display !== 'contents') return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
+        }
+      }
+    );
+
+    // Match patterns like "King_Raja:" or "Monk_Ananda: [65-year-old..."
+    const nameDefPattern = /\b(\w+(?:_\w+)+)\s*:/g;
+    while ((textNode = walker2.nextNode())) {
+      const text = textNode.textContent;
+      let match;
+      nameDefPattern.lastIndex = 0;
+      while ((match = nameDefPattern.exec(text))) {
+        const name = match[1].trim().toLowerCase();
+        if (name.length < 3 || name.length > 30) continue;
+        // Skip common non-name patterns
+        if (['data_de', 'nano_banana', 'text_prompt'].includes(name)) continue;
+        const card = findRowContainer(textNode.parentElement);
+        registerCard(name, card, 'name:def');
+      }
+    }
+
+    // Strategy 3: Also check aria-label and title attributes on images
     const allImgs = document.querySelectorAll('img:not(#veo3-panel img):not(#veo3-bubble img)');
     for (const img of allImgs) {
       if (isOurs(img)) continue;
@@ -697,9 +754,18 @@
         if (name.length === 0 || name.length > 30) continue;
         if (!nameToCard.has(name)) {
           const card = img.closest('[class*="card"], [class*="item"], [role="listitem"]') || img.parentElement || img;
-          nameToCard.set(name, card);
-          console.log(`🎭 Found character (img attr): @${name} → ${card.tagName}`);
+          registerCard(name, card, 'img-attr');
         }
+      }
+    }
+
+    // Filter out entries that came from the prompt input (no image, small size)
+    for (const [name, card] of nameToCard) {
+      const hasImg = !!card.querySelector('img');
+      const rect = card.getBoundingClientRect();
+      if (!hasImg && rect.width < 200) {
+        nameToCard.delete(name);
+        console.log(`🎭 Removed @${name}: no image, small card (${Math.round(rect.width)}x${Math.round(rect.height)})`);
       }
     }
 
@@ -1223,6 +1289,51 @@
     return cards;
   }
 
+  // Find "add" button (icon="add") in the right panel near a card
+  // VEO3 places an "add" button inside each character/image section
+  // in the right panel to include it in the prompt.
+  function findAddButtonNearCard(cardEl) {
+    const cardRect = cardEl.getBoundingClientRect();
+    // The "add" button is in the right panel (x > 1800) at y within the card's vertical range
+    const allBtns = document.querySelectorAll('button, [role="button"]');
+    let bestBtn = null;
+    let bestDist = Infinity;
+
+    for (const btn of allBtns) {
+      if (btn.closest('#veo3-panel, #veo3-bubble')) continue;
+      const icon = btn.querySelector('i.google-symbols, .google-symbols, i.material-icons');
+      const iconText = icon ? (icon.textContent || '').trim() : '';
+      if (iconText !== 'add') continue;
+      // Also skip header-level "add" buttons (like "Adicionar mídia")
+      const btnText = (btn.textContent || '').toLowerCase();
+      if (btnText.includes('adicionar') || btnText.includes('mídia')) continue;
+
+      const bRect = btn.getBoundingClientRect();
+      if (bRect.width === 0 || bRect.height === 0) continue;
+
+      // Check vertical overlap: button y should be within the card's y range (with margin)
+      const vertOverlap = bRect.top >= cardRect.top - 50 && bRect.bottom <= cardRect.bottom + 50;
+      // Check if button is in the right panel area (large cards span full width, right panel > 1800)
+      const inRightPanel = bRect.left > 1700;
+      // Also try: button just below the card (for right-panel sections)
+      const justBelow = bRect.top >= cardRect.bottom - 30 && bRect.top <= cardRect.bottom + 100 && bRect.left > cardRect.left;
+
+      if (vertOverlap || (inRightPanel && justBelow)) {
+        const dist = Math.abs(bRect.top - cardRect.top) + Math.abs(bRect.left - cardRect.left) / 10;
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestBtn = btn;
+        }
+      }
+    }
+
+    if (bestBtn) {
+      const r = bestBtn.getBoundingClientRect();
+      console.log(`🎭 findAddButtonNearCard: found at (${Math.round(r.left)},${Math.round(r.top)}) dist=${Math.round(bestDist)}`);
+    }
+    return bestBtn;
+  }
+
   // Search for "Incluir no comando" button near/within a specific card element
   function findIncluirButtonNear(cardEl) {
     // Search scope: the card and a few parent levels
@@ -1501,7 +1612,7 @@
     const ts = new Date().toLocaleTimeString('pt-BR');
     info.push(`=== VEO3 DIAGNOSTIC (${isDeep ? 'PROFUNDO' : 'RÁPIDO'}) — ${ts} ===`);
     info.push(`URL: ${window.location.href}`);
-    info.push(`Script: v1.5.0`);
+    info.push(`Script: v1.6.0`);
 
     updateStatus(`🔍 Executando diagnóstico ${isDeep ? 'profundo' : 'rápido'}...`);
 
@@ -1621,44 +1732,256 @@
           }
         }
 
-        // Check for @Name in character cards that findCharacterCards found
+        // Check for @Name in character cards — test the ACTUAL ⋮ → Incluir flow
         if (cardMap.size > 0) {
-          info.push('\n── [PROFUNDO] HOVER + INCLUIR TEST ──');
-          for (const [name, card] of cardMap) {
-            info.push(`  @${name}: hovering...`);
+          info.push('\n── [PROFUNDO] HOVER + ⋮ → INCLUIR TEST ──');
+          // Only test the first card to avoid side-effects
+          const testEntries = [...cardMap.entries()].slice(0, 1);
+          for (const [name, card] of testEntries) {
+            info.push(`  @${name}: hovering card...`);
             try {
-              await hoverOverImageCard(card);
-              const img = card.querySelector('img');
-              if (img) await hoverOverImageCard(img);
+              // Step 0: Scroll into view first (cards may be off-screen)
+              card.scrollIntoView({ behavior: 'smooth', block: 'center' });
               await sleep(600);
 
-              const btn = findIncluirButtonNear(card);
-              if (btn) {
-                info.push(`    🟢 Botão encontrado APÓS hover: <${btn.tagName}> text="${(btn.textContent || '').trim().substring(0, 40)}" visible=${btn.offsetParent !== null}`);
-              } else {
-                // Scan more broadly - any new buttons that appeared?
-                const allBtns = card.querySelectorAll('button, [role="button"]');
-                info.push(`    🔴 Botão NÃO encontrado após hover. Botões dentro do card: ${allBtns.length}`);
-                allBtns.forEach((b, bi) => {
-                  info.push(`      [${bi}] <${b.tagName}> text="${(b.textContent || '').trim().substring(0, 40)}" visible=${b.offsetParent !== null} aria="${b.getAttribute('aria-label') || ''}"`);
-                });
+              // Step 1: Hover to reveal ⋮ button
+              const hoverTarget = card.querySelector('a, img, [role="img"]') || card;
+              // Re-get rect AFTER scroll
+              const hRect = hoverTarget.getBoundingClientRect();
+              const hx = hRect.left + hRect.width / 2;
+              const hy = hRect.top + hRect.height / 2;
 
-                // Check parent too
-                if (card.parentElement) {
-                  const parentBtns = card.parentElement.querySelectorAll('button, [role="button"]');
-                  info.push(`    Botões no parent: ${parentBtns.length}`);
-                  parentBtns.forEach((b, bi) => {
-                    if (b.closest('#veo3-panel')) return;
-                    info.push(`      [${bi}] <${b.tagName}> text="${(b.textContent || '').trim().substring(0, 40)}" visible=${b.offsetParent !== null} aria="${b.getAttribute('aria-label') || ''}"`);
-                  });
+              hoverTarget.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, clientX: hx, clientY: hy }));
+              hoverTarget.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: hx, clientY: hy }));
+              hoverTarget.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: hx, clientY: hy }));
+              hoverTarget.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true, clientX: hx, clientY: hy }));
+              hoverTarget.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: hx, clientY: hy }));
+              let hp = hoverTarget.parentElement;
+              for (let hi = 0; hi < 4 && hp && hp !== card.parentElement; hi++) {
+                hp.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, clientX: hx, clientY: hy }));
+                hp.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: hx, clientY: hy }));
+                hp = hp.parentElement;
+              }
+              await sleep(600);
+
+              // Step 2: Find more_vert button — search GLOBALLY, filter by POSITION on image
+              // The ⋮ overlay may be a React portal (outside card DOM tree)
+              const imgCard = card.querySelector('a[class]') || card.querySelector('a') || card;
+              const imgR = imgCard.getBoundingClientRect();
+              info.push(`    📍 Image <${imgCard.tagName}> at (${Math.round(imgR.left)},${Math.round(imgR.top)}) ${Math.round(imgR.width)}x${Math.round(imgR.height)}`);
+
+              let moreBtn = null;
+              const allPageBtns2 = document.querySelectorAll('button, [role="button"]');
+              for (const btn of allPageBtns2) {
+                if (btn.closest('#veo3-panel, #veo3-bubble')) continue;
+                const icon = btn.querySelector('i.google-symbols, .google-symbols');
+                const iconText = icon ? (icon.textContent || '').trim() : '';
+                if (iconText !== 'more_vert' && iconText !== 'more_horiz') continue;
+                const bRect = btn.getBoundingClientRect();
+                if (bRect.width === 0 || bRect.height === 0) continue;
+                // Must be positioned WITHIN image bounds
+                const inBounds = bRect.left >= imgR.left - 30 && bRect.right <= imgR.right + 30 &&
+                  bRect.top >= imgR.top - 30 && bRect.bottom <= imgR.bottom + 30;
+                if (inBounds) {
+                  moreBtn = btn;
+                  info.push(`    🟢 Botão ⋮ at (${Math.round(bRect.left)},${Math.round(bRect.top)}) WITHIN image bounds`);
+                  break;
                 }
+              }
+
+              // Fallback: search inside card DOM only
+              if (!moreBtn) {
+                const cardBtns = card.querySelectorAll('button, [role="button"]');
+                for (const btn of cardBtns) {
+                  if (btn.closest('#veo3-panel, #veo3-bubble')) continue;
+                  const icon = btn.querySelector('i.google-symbols');
+                  const iconText = icon ? (icon.textContent || '').trim() : '';
+                  if (iconText === 'more_vert') {
+                    const bRect = btn.getBoundingClientRect();
+                    if (bRect.top > 50) { moreBtn = btn; break; } // skip header
+                  }
+                }
+              }
+
+              if (!moreBtn) {
+                info.push(`    🔴 Botão ⋮ (more_vert) NÃO encontrado no card`);
+                // List all buttons for debugging
+                const allBtns = card.querySelectorAll('button, [role="button"]');
+                info.push(`    Botões disponíveis: ${allBtns.length}`);
+                allBtns.forEach((b, bi) => {
+                  info.push(`      [${bi}] <${b.tagName}> text="${(b.textContent || '').trim().substring(0, 40)}" visible=${b.offsetParent !== null}`);
+                });
+              } else {
+                info.push(`    🟢 Botão ⋮ encontrado: visible=${moreBtn.offsetParent !== null}`);
+                info.push(`    🔬 React props: ${inspectReactProps(moreBtn)}`);
+
+                // Step 3: Click ⋮ using triggerReactClick (PRIMARY)
+                const origDisplay = moreBtn.style.display;
+                const origVisibility = moreBtn.style.visibility;
+                const origOpacity = moreBtn.style.opacity;
+                moreBtn.style.setProperty('display', 'inline-flex', 'important');
+                moreBtn.style.setProperty('visibility', 'visible', 'important');
+                moreBtn.style.setProperty('opacity', '1', 'important');
+
+                // Force-show ancestors
+                const hiddenAncs = [];
+                let anc = moreBtn.parentElement;
+                for (let ai = 0; ai < 5 && anc && anc !== card; ai++) {
+                  if (anc.offsetParent === null || getComputedStyle(anc).opacity === '0') {
+                    hiddenAncs.push({ el: anc, d: anc.style.display, v: anc.style.visibility, o: anc.style.opacity });
+                    anc.style.setProperty('display', 'flex', 'important');
+                    anc.style.setProperty('visibility', 'visible', 'important');
+                    anc.style.setProperty('opacity', '1', 'important');
+                  }
+                  anc = anc.parentElement;
+                }
+                await sleep(100);
+
+                // Step 3a: Check elementFromPoint (detect overlapping elements)
+                const bRect = moreBtn.getBoundingClientRect();
+                const bcx = bRect.left + bRect.width / 2;
+                const bcy = bRect.top + bRect.height / 2;
+                const topEl = document.elementFromPoint(bcx, bcy);
+                const isMoreOnTop = topEl === moreBtn || moreBtn.contains(topEl) || topEl?.closest('button') === moreBtn;
+                info.push(`    📍 elementFromPoint(${Math.round(bcx)},${Math.round(bcy)}) = <${topEl?.tagName}> cls="${(topEl?.className || '').toString().substring(0, 30)}" isMoreBtn=${isMoreOnTop}`);
+
+                // Step 3b: Hybrid click — pointerdown/mousedown + .click() (trusted)
+                const clickTarget = isMoreOnTop ? moreBtn : topEl;
+                if (clickTarget) {
+                  clickTarget.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: bcx, clientY: bcy, pointerId: 1, pointerType: 'mouse' }));
+                  clickTarget.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: bcx, clientY: bcy, button: 0 }));
+                  await sleep(80);
+                  clickTarget.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: bcx, clientY: bcy, pointerId: 1, pointerType: 'mouse' }));
+                  clickTarget.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: bcx, clientY: bcy, button: 0 }));
+                  clickTarget.click();
+                }
+                await sleep(700);
+
+                let menuAppeared = !!document.querySelector('[role="menu"], [role="listbox"], [role="menuitem"]');
+                info.push(`    ${menuAppeared ? '🟢' : '🔴'} Menu after hybrid click: ${menuAppeared}`);
+
+                // Step 3c: focus + Space key
+                if (!menuAppeared) {
+                  moreBtn.focus();
+                  await sleep(100);
+                  moreBtn.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', code: 'Space', keyCode: 32, bubbles: true, cancelable: true }));
+                  await sleep(50);
+                  moreBtn.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', code: 'Space', keyCode: 32, bubbles: true }));
+                  await sleep(700);
+                  menuAppeared = !!document.querySelector('[role="menu"], [role="listbox"], [role="menuitem"]');
+                  info.push(`    ${menuAppeared ? '🟢' : '🔴'} Menu after Space key: ${menuAppeared}`);
+                }
+
+                // Step 3d: Check for any popup (not just role="menu")
+                if (!menuAppeared) {
+                  const popups = document.querySelectorAll('[role="menu"], [role="listbox"], [role="dialog"], [class*="popup"], [class*="dropdown"], [class*="menu"]');
+                  for (const p of popups) {
+                    if (p.closest('#veo3-panel, #veo3-bubble')) continue;
+                    const pr = p.getBoundingClientRect();
+                    if (pr.width > 0 && pr.height > 0) {
+                      menuAppeared = true;
+                      info.push(`    🟢 Found popup: <${p.tagName}> role="${p.getAttribute('role')}" cls="${(p.className || '').toString().substring(0, 40)}" (${Math.round(pr.left)},${Math.round(pr.top)}) ${Math.round(pr.width)}x${Math.round(pr.height)}`);
+                      break;
+                    }
+                  }
+                  if (!menuAppeared) info.push(`    🔴 No popups found anywhere`);
+                }
+
+                // Step 4: Search for "Incluir no comando" in any menu
+                let incluirItem = null;
+                const menuItems = document.querySelectorAll(
+                  '[role="menuitem"], [role="option"], [role="menu"] button, [role="menu"] [role="button"], ' +
+                  '[role="menu"] li, [role="menu"] div, [role="menu"] span, [role="listbox"] div'
+                );
+                const menuTexts = [];
+                for (const item of menuItems) {
+                  if (item.closest('#veo3-panel, #veo3-bubble')) continue;
+                  const text = (item.textContent || '').toLowerCase();
+                  menuTexts.push(text.trim().substring(0, 60));
+                  if (text.includes('incluir no comando') || text.includes('include in prompt') ||
+                    text.includes('incluir') || text.includes('include')) {
+                    incluirItem = item;
+                  }
+                }
+
+                if (incluirItem) {
+                  info.push(`    🟢 "Incluir no comando" encontrado! → <${incluirItem.tagName}> text="${(incluirItem.textContent || '').trim().substring(0, 50)}"`);
+                  info.push(`    ✅ FLUXO COMPLETO FUNCIONA ✅`);
+                } else {
+                  info.push(`    🔴 "Incluir no comando" NÃO encontrado no menu ⋮`);
+                  info.push(`    Menu items encontrados: ${menuTexts.length}`);
+                  menuTexts.forEach((t, i) => {
+                    info.push(`      [${i}] "${t}"`);
+                  });
+                  // Also scan ALL visible elements for any "incluir" text (broader search)
+                  const allEls = document.querySelectorAll('li, div, span, button, a');
+                  const incluirCandidates = [];
+                  for (const el of allEls) {
+                    if (el.closest('#veo3-panel, #veo3-bubble')) continue;
+                    const text = (el.textContent || '').toLowerCase().trim();
+                    if (text.length > 80) continue;
+                    if (text.includes('incluir') || text.includes('include')) {
+                      const r = el.getBoundingClientRect();
+                      if (r.width > 0 && r.height > 0) {
+                        incluirCandidates.push(`<${el.tagName}> (${Math.round(r.left)},${Math.round(r.top)}) "${text.substring(0, 50)}"`);
+                      }
+                    }
+                  }
+                  if (incluirCandidates.length > 0) {
+                    info.push(`    📍 Elementos com "incluir/include" visíveis: ${incluirCandidates.length}`);
+                    incluirCandidates.forEach((c, i) => info.push(`      [${i}] ${c}`));
+                  }
+                }
+
+                // NOW restore styles
+                moreBtn.style.display = origDisplay;
+                moreBtn.style.visibility = origVisibility;
+                moreBtn.style.opacity = origOpacity;
+                for (const h of hiddenAncs) { h.el.style.display = h.d; h.el.style.visibility = h.v; h.el.style.opacity = h.o; }
+
+                // Close the menu
+                document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+                await sleep(300);
+              }
+
+              // Step 5: Scan for standalone "add" buttons near this card (alternative include method)
+              const cardRect = card.getBoundingClientRect();
+              const addBtns = document.querySelectorAll('button, [role="button"]');
+              const nearbyAdds = [];
+              for (const btn of addBtns) {
+                if (btn.closest('#veo3-panel, #veo3-bubble')) continue;
+                const icon = btn.querySelector('i.google-symbols');
+                const iconText = icon ? (icon.textContent || '').trim() : '';
+                if (iconText !== 'add') continue;
+                const btnRect = btn.getBoundingClientRect();
+                // Must be on right side (x > 1800) and within card Y range ± 200px
+                if (btnRect.left > 1800 && Math.abs(btnRect.top - cardRect.top) < cardRect.height + 200) {
+                  nearbyAdds.push({ btn, x: Math.round(btnRect.left), y: Math.round(btnRect.top), w: Math.round(btnRect.width), h: Math.round(btnRect.height) });
+                }
+              }
+              if (nearbyAdds.length > 0) {
+                info.push(`    📍 Botões "add" no painel direito perto do card: ${nearbyAdds.length}`);
+                nearbyAdds.forEach((a, i) => {
+                  info.push(`      [${i}] (${a.x},${a.y}) ${a.w}x${a.h}`);
+                });
               }
 
               // Mouse leave
               card.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }));
             } catch (e) {
-              info.push(`    ❌ Erro no hover: ${e.message}`);
+              info.push(`    ❌ Erro no teste: ${e.message}`);
             }
+          }
+
+          // List buttons for remaining cards (without clicking)
+          const remainingEntries = [...cardMap.entries()].slice(1);
+          for (const [name, card] of remainingEntries) {
+            const moreIcons = card.querySelectorAll('i.google-symbols');
+            let hasMore = false;
+            for (const icon of moreIcons) {
+              if ((icon.textContent || '').trim() === 'more_vert') { hasMore = true; break; }
+            }
+            info.push(`  @${name}: ⋮ button ${hasMore ? '🟢 presente' : '🔴 ausente'} (não testado - mesma estrutura)`);
           }
         }
 
@@ -1975,200 +2298,644 @@
   // CHARACTER-BASED IMAGE SELECTION (auto-detect @Name: on page)
   // ============================================================================
 
-  // Selects specific character images by auto-detecting @Name: text on page
-  // characterNames: array of lowercase names from [CHARS:] directive
-  // Reuses existing helpers: hoverOverImageCard, findIncluirButtonNear, clickIncluirButton
-  // Opens the ⋮ context menu on an image card and clicks "Incluir no comando"
-  // The ⋮ button may be hidden (CSS :hover only) — we force-click it via multiple strategies
+  // Helper: inspect React props on a DOM element (for diagnostics)
+  function inspectReactProps(element) {
+    if (!element) return 'null element';
+    const keys = Object.keys(element);
+    const reactKeys = keys.filter(k => k.startsWith('__react'));
+    if (reactKeys.length === 0) return 'no React keys found';
+
+    const results = [];
+    results.push(`React keys: ${reactKeys.join(', ')}`);
+
+    // Check __reactProps$
+    const propsKey = keys.find(k => k.startsWith('__reactProps$'));
+    if (propsKey && element[propsKey]) {
+      const props = element[propsKey];
+      const handlers = Object.keys(props).filter(k => k.startsWith('on'));
+      results.push(`__reactProps handlers: [${handlers.join(', ')}]`);
+    }
+
+    // Check fiber
+    const fiberKey = keys.find(k => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
+    if (fiberKey && element[fiberKey]) {
+      let fiber = element[fiberKey];
+      for (let i = 0; i < 5 && fiber; i++) {
+        const mp = fiber.memoizedProps || fiber.pendingProps;
+        if (mp) {
+          const handlers = Object.keys(mp).filter(k => k.startsWith('on'));
+          if (handlers.length > 0) {
+            results.push(`fiber[${i}] handlers: [${handlers.join(', ')}]`);
+          }
+        }
+        fiber = fiber.return;
+      }
+    }
+
+    return results.join(' | ');
+  }
+
+  // Helper: trigger a SPECIFIC React event handler on an element
+  function triggerReactHandler(element, handlerName, eventObj) {
+    if (!element) return false;
+    const keys = Object.keys(element);
+
+    // Try __reactProps$ first
+    const propsKey = keys.find(k => k.startsWith('__reactProps$'));
+    if (propsKey && element[propsKey]) {
+      const props = element[propsKey];
+      if (typeof props[handlerName] === 'function') {
+        try {
+          props[handlerName](eventObj);
+          console.log(`🎭 triggerReactHandler: ${handlerName} via __reactProps$`);
+          return true;
+        } catch (e) {
+          console.warn(`🎭 triggerReactHandler error: ${e.message}`);
+        }
+      }
+    }
+
+    // Walk fiber tree
+    const fiberKey = keys.find(k => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
+    if (fiberKey && element[fiberKey]) {
+      let fiber = element[fiberKey];
+      for (let i = 0; i < 10 && fiber; i++) {
+        const props = fiber.memoizedProps || fiber.pendingProps;
+        if (props && typeof props[handlerName] === 'function') {
+          try {
+            props[handlerName](eventObj);
+            console.log(`🎭 triggerReactHandler: ${handlerName} via fiber[${i}]`);
+            return true;
+          } catch (e) {
+            console.warn(`🎭 triggerReactHandler fiber error: ${e.message}`);
+          }
+        }
+        fiber = fiber.return;
+      }
+    }
+
+    return false;
+  }
+
+  // Main: trigger click on a React element by trying ALL common event handlers
+  // Google Material/MUI components use onPointerDown/onPointerUp, not onClick
+  function triggerReactClick(element) {
+    if (!element) return false;
+    const rect = element.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+
+    // Log what React props are available on this element
+    console.log(`🎭 triggerReactClick: inspecting ${element.tagName} → ${inspectReactProps(element)}`);
+
+    // Build fake events for different handler types
+    const baseProps = { target: element, currentTarget: element, preventDefault: () => { }, stopPropagation: () => { }, bubbles: true, cancelable: true, isTrusted: true, clientX: cx, clientY: cy, pageX: cx, pageY: cy, screenX: cx, screenY: cy, button: 0, buttons: 1 };
+
+    const clickEvent = { ...baseProps, type: 'click', nativeEvent: new MouseEvent('click', { bubbles: true, clientX: cx, clientY: cy }) };
+    const pointerDownEvent = { ...baseProps, type: 'pointerdown', nativeEvent: new PointerEvent('pointerdown', { bubbles: true, clientX: cx, clientY: cy }), pointerId: 1, pointerType: 'mouse' };
+    const pointerUpEvent = { ...baseProps, type: 'pointerup', nativeEvent: new PointerEvent('pointerup', { bubbles: true, clientX: cx, clientY: cy }), pointerId: 1, pointerType: 'mouse', buttons: 0 };
+    const mouseDownEvent = { ...baseProps, type: 'mousedown', nativeEvent: new MouseEvent('mousedown', { bubbles: true, clientX: cx, clientY: cy }) };
+    const mouseUpEvent = { ...baseProps, type: 'mouseup', nativeEvent: new MouseEvent('mouseup', { bubbles: true, clientX: cx, clientY: cy }), buttons: 0 };
+
+    // Strategy 1: Try onClick directly
+    if (triggerReactHandler(element, 'onClick', clickEvent)) return true;
+
+    // Strategy 2: Try onPointerDown + onPointerUp (Google/MUI pattern)
+    const pdOk = triggerReactHandler(element, 'onPointerDown', pointerDownEvent);
+    if (pdOk) {
+      triggerReactHandler(element, 'onPointerUp', pointerUpEvent);
+      triggerReactHandler(element, 'onClick', clickEvent); // Some also need onClick after pointer
+      return true;
+    }
+
+    // Strategy 3: Try onMouseDown + onMouseUp
+    const mdOk = triggerReactHandler(element, 'onMouseDown', mouseDownEvent);
+    if (mdOk) {
+      triggerReactHandler(element, 'onMouseUp', mouseUpEvent);
+      triggerReactHandler(element, 'onClick', clickEvent);
+      return true;
+    }
+
+    // Strategy 4: Try any on* handler that looks like a click/press handler
+    const keys = Object.keys(element);
+    const propsKey = keys.find(k => k.startsWith('__reactProps$'));
+    if (propsKey && element[propsKey]) {
+      const props = element[propsKey];
+      for (const key of Object.keys(props)) {
+        if (typeof props[key] === 'function' && (key.includes('Press') || key.includes('Tap') || key.includes('Action'))) {
+          try {
+            props[key](clickEvent);
+            console.log(`🎭 triggerReactClick: called ${key} via __reactProps$`);
+            return true;
+          } catch (e) { /* ignore */ }
+        }
+      }
+    }
+
+    console.warn(`🎭 triggerReactClick: no React handler found on ${element.tagName}`);
+    return false;
+  }
+
+  // Include an image/character card in the prompt.
+  //
+  // STRATEGY ORDER:
+  //   1. Hover card → find ⋮ → __reactProps$.onClick → "Incluir no comando"
+  //   2. Hover → find "Incluir no comando" overlay button directly
   async function includeCardViaContextMenu(card, label) {
-    // Step A: Find the ⋮ (more_vert) button — search broadly (may be hidden)
-    let moreBtn = null;
+    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    await sleep(400);
 
-    // Search inside the card and up to 2 parent levels
-    const searchRoots = [card];
-    if (card.parentElement) searchRoots.push(card.parentElement);
-    if (card.parentElement?.parentElement) searchRoots.push(card.parentElement.parentElement);
+    const cardRect = card.getBoundingClientRect();
+    console.log(`🎭 ${label}: card <${card.tagName}> at (${Math.round(cardRect.left)},${Math.round(cardRect.top)}) ${Math.round(cardRect.width)}x${Math.round(cardRect.height)}`);
 
-    for (const root of searchRoots) {
-      const btns = root.querySelectorAll('button, [role="button"]');
-      for (const btn of btns) {
-        if (btn.closest('#veo3-panel, #veo3-bubble')) continue;
-        const icon = btn.querySelector('i.google-symbols');
-        const iconText = icon ? (icon.textContent || '').trim() : '';
-        const text = (btn.textContent || '').toLowerCase();
-        if (iconText === 'more_vert' || text.includes('mais opç') || text.includes('more')) {
-          moreBtn = btn;
-          break;
-        }
-      }
-      if (moreBtn) break;
-    }
-
-    // Strategy B: Even hidden buttons are in the DOM — search ALL descendants
-    if (!moreBtn) {
-      const allDescendants = card.querySelectorAll('i.google-symbols');
-      for (const icon of allDescendants) {
-        if ((icon.textContent || '').trim() === 'more_vert') {
-          moreBtn = icon.closest('button') || icon.parentElement;
-          break;
-        }
-      }
-    }
-
-    // Strategy C: Find by position — look for more_vert buttons at similar Y as card
-    if (!moreBtn) {
-      const cardRect = card.getBoundingClientRect();
-      const allMoreBtns = document.querySelectorAll('i.google-symbols');
-      for (const icon of allMoreBtns) {
-        if ((icon.textContent || '').trim() !== 'more_vert') continue;
-        const btn = icon.closest('button') || icon.parentElement;
-        if (!btn) continue;
-        const btnRect = btn.getBoundingClientRect();
-        // Must be within the same vertical band as the card
-        if (Math.abs(btnRect.top - cardRect.top) < cardRect.height) {
-          moreBtn = btn;
-          break;
-        }
-      }
-    }
-
-    if (!moreBtn) {
-      console.warn(`🎭 ${label}: ⋮ (more_vert) button not found`);
-      // Fallback: try right-click (contextmenu event) on the image
-      const img = card.querySelector('img, a');
-      if (img) {
-        console.log(`🎭 ${label}: trying contextmenu event on image...`);
-        const imgRect = img.getBoundingClientRect();
-        img.dispatchEvent(new MouseEvent('contextmenu', {
-          bubbles: true, cancelable: true,
-          clientX: imgRect.left + imgRect.width / 2,
-          clientY: imgRect.top + imgRect.height / 2
-        }));
-        await sleep(600);
-      } else {
+    // Check if this generation FAILED — failed cards don't have ⋮ overlay
+    const cardText = (card.textContent || '').toLowerCase();
+    if (cardText.includes('falha') || cardText.includes('failed') || cardText.includes('error')) {
+      const hasWarning = card.querySelector('i.google-symbols')?.textContent?.trim() === 'warning';
+      if (hasWarning) {
+        console.warn(`🎭 ${label}: generation FAILED (has warning icon), skipping inclusion`);
         return false;
       }
-    } else {
-      // Force visibility and click the ⋮ button
-      console.log(`🎭 ${label}: clicking ⋮ (more_vert)... visible=${moreBtn.offsetParent !== null}`);
+    }
 
-      // Temporarily force-show the button if hidden
-      const origDisplay = moreBtn.style.display;
-      const origVisibility = moreBtn.style.visibility;
-      const origOpacity = moreBtn.style.opacity;
-      const origPointerEvents = moreBtn.style.pointerEvents;
+    // ═══════════════════════════════════════════════════════════════════════
+    // STEP 1: Find the correct image element to hover
+    // In GALLERY view: card is a large row (~2177x400), find image inside
+    // In EDITOR view: card may be a small prompt-text card (249x98),
+    //   walk siblings to find the larger result image card.
+    // ═══════════════════════════════════════════════════════════════════════
+    let hoverTarget = card;
+
+    // Detect small prompt-text card (editor view right panel)
+    if (cardRect.height < 200 && cardRect.width < 400) {
+      console.log(`🎭 ${label}: small card — searching for adjacent result image card...`);
+      const siblings = card.parentElement ? [...card.parentElement.children] : [];
+      const cardIndex = siblings.indexOf(card);
+      let bestSibling = null;
+      let bestDist = Infinity;
+
+      for (let i = 0; i < siblings.length; i++) {
+        const sib = siblings[i];
+        if (sib === card) continue;
+        const sibRect = sib.getBoundingClientRect();
+        const sibImg = sib.querySelector('img');
+        if (sibRect.height > 150 && sibImg && sibRect.width > 100) {
+          const dist = Math.abs(i - cardIndex);
+          if (dist < bestDist) { bestDist = dist; bestSibling = sib; }
+        }
+      }
+
+      if (!bestSibling && card.parentElement) {
+        const parent = card.parentElement;
+        const pSiblings = parent.parentElement ? [...parent.parentElement.children] : [];
+        const pIdx = pSiblings.indexOf(parent);
+        for (let i = Math.max(0, pIdx - 3); i < Math.min(pSiblings.length, pIdx + 3); i++) {
+          const sib = pSiblings[i];
+          if (sib === parent) continue;
+          const sibRect = sib.getBoundingClientRect();
+          if (sibRect.height > 150 && sib.querySelector('img') && sibRect.width > 100) {
+            const dist = Math.abs(i - pIdx);
+            if (dist < bestDist) { bestDist = dist; bestSibling = sib; }
+          }
+        }
+      }
+
+      if (bestSibling) {
+        console.log(`🎭 ${label}: found adjacent result image card at distance ${bestDist}`);
+        hoverTarget = bestSibling;
+      }
+    }
+
+    // IMPORTANT: do NOT click <A> links directly — that navigates to full-screen view!
+    // Only use the card/div for hovering, never click the <A> itself.
+    const imageEl = hoverTarget.querySelector('img') || card.querySelector('img');
+    const hoverEl = imageEl || hoverTarget;
+    hoverEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    await sleep(400);
+
+    const imgRect = hoverEl.getBoundingClientRect();
+    console.log(`🎭 ${label}: hover target <${hoverEl.tagName}> at (${Math.round(imgRect.left)},${Math.round(imgRect.top)}) ${Math.round(imgRect.width)}x${Math.round(imgRect.height)}`);
+
+    // Hover the element to trigger React overlay (⋮ button, "Incluir" button)
+    await hoverOverImageCard(hoverEl);
+    if (hoverEl !== hoverTarget) await hoverOverImageCard(hoverTarget);
+    await sleep(500);
+
+    // Quick check: "Incluir no comando" button directly visible?
+    let incluirBtn = findIncluirButtonNear(hoverTarget);
+    if (!incluirBtn) incluirBtn = findIncluirButtonNear(card);
+
+    if (incluirBtn) {
+      console.log(`🎭 ${label}: clicking "Incluir no comando" button directly...`);
+      const clicked = await clickIncluirButton(incluirBtn);
+      if (clicked) {
+        console.log(`🎭 ✅ ${label}: included via "Incluir" button!`);
+        hoverEl.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }));
+        return true;
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // STEP 2: Find ⋮ button and open context menu → "Incluir no comando"
+    // ═══════════════════════════════════════════════════════════════════════
+    console.log(`🎭 ${label}: looking for ⋮ context menu...`);
+
+    // Re-hover to ensure overlay is visible
+    const hx = imgRect.left + imgRect.width * 0.8;
+    const hy = imgRect.top + 30;
+    hoverEl.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true, clientX: hx, clientY: hy }));
+    hoverEl.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: hx, clientY: hy }));
+    hoverEl.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, clientX: hx, clientY: hy }));
+    hoverEl.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: hx, clientY: hy }));
+    hoverEl.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: hx, clientY: hy }));
+    await sleep(500);
+
+    // Find ⋮ button by position over the image card
+    let moreBtn = null;
+    const allBtns = document.querySelectorAll('button, [role="button"]');
+
+    for (const btn of allBtns) {
+      if (btn.closest('#veo3-panel, #veo3-bubble')) continue;
+      const icon = btn.querySelector('i.google-symbols, i.material-icons, i.material-symbols-outlined, .google-symbols');
+      const iconText = icon ? (icon.textContent || '').trim() : '';
+      if (iconText !== 'more_vert' && iconText !== 'more_horiz') continue;
+
+      const bRect = btn.getBoundingClientRect();
+      if (bRect.width === 0 || bRect.height === 0) continue;
+
+      const inXRange = bRect.left >= imgRect.left - 30 && bRect.right <= imgRect.right + 30;
+      const inYRange = bRect.top >= imgRect.top - 30 && bRect.bottom <= imgRect.bottom + 30;
+
+      if (inXRange && inYRange) {
+        moreBtn = btn;
+        console.log(`🎭 ${label}: found ⋮ at (${Math.round(bRect.left)},${Math.round(bRect.top)}) WITHIN image bounds`);
+        break;
+      }
+    }
+
+    if (!moreBtn) {
+      // Search inside card DOM
+      const cardBtns = card.querySelectorAll('button, [role="button"]');
+      for (const btn of cardBtns) {
+        if (btn.closest('#veo3-panel, #veo3-bubble')) continue;
+        const icon = btn.querySelector('i.google-symbols, .google-symbols');
+        const iconText = icon ? (icon.textContent || '').trim() : '';
+        if (iconText === 'more_vert' || iconText === 'more_horiz') {
+          const bRect = btn.getBoundingClientRect();
+          if (bRect.top > 0 && bRect.top < 50) continue;
+          moreBtn = btn;
+          break;
+        }
+      }
+    }
+
+    if (!moreBtn) {
+      console.warn(`🎭 ${label}: ⋮ button not found, all inclusion methods failed`);
+      hoverEl.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }));
+      return false;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Click the ⋮ button — COMPREHENSIVE multi-strategy approach
+    // The button uses styled-components and has NO __reactProps$/__reactFiber$
+    // on the element itself. React event delegation listens at the root.
+    // We need events with composed:true, view:window, and proper detail.
+    // ═══════════════════════════════════════════════════════════════════════
+    const moreBtnRect = moreBtn.getBoundingClientRect();
+    const bx = moreBtnRect.left + moreBtnRect.width / 2;
+    const by = moreBtnRect.top + moreBtnRect.height / 2;
+
+    // Force visibility if zero dimensions
+    const forcedElements = [];
+    if (moreBtnRect.width === 0 || moreBtnRect.height === 0) {
+      forcedElements.push({
+        el: moreBtn,
+        orig: { display: moreBtn.style.display, visibility: moreBtn.style.visibility, opacity: moreBtn.style.opacity, pointerEvents: moreBtn.style.pointerEvents }
+      });
       moreBtn.style.setProperty('display', 'inline-flex', 'important');
       moreBtn.style.setProperty('visibility', 'visible', 'important');
       moreBtn.style.setProperty('opacity', '1', 'important');
       moreBtn.style.setProperty('pointer-events', 'auto', 'important');
 
-      // Also force-show parent containers that might be hiding it
-      const hiddenAncestors = [];
-      let ancestor = moreBtn.parentElement;
-      for (let i = 0; i < 5 && ancestor && ancestor !== card; i++) {
-        if (ancestor.offsetParent === null || getComputedStyle(ancestor).opacity === '0') {
-          hiddenAncestors.push({
-            el: ancestor,
-            origDisplay: ancestor.style.display,
-            origVisibility: ancestor.style.visibility,
-            origOpacity: ancestor.style.opacity
+      let anc = moreBtn.parentElement;
+      for (let i = 0; i < 20 && anc && anc !== document.body; i++) {
+        const cs = getComputedStyle(anc);
+        if (cs.opacity === '0' || cs.visibility === 'hidden' || cs.display === 'none') {
+          forcedElements.push({
+            el: anc,
+            orig: { display: anc.style.display, visibility: anc.style.visibility, opacity: anc.style.opacity, pointerEvents: anc.style.pointerEvents }
           });
-          ancestor.style.setProperty('display', 'flex', 'important');
-          ancestor.style.setProperty('visibility', 'visible', 'important');
-          ancestor.style.setProperty('opacity', '1', 'important');
+          anc.style.setProperty('display', 'flex', 'important');
+          anc.style.setProperty('visibility', 'visible', 'important');
+          anc.style.setProperty('opacity', '1', 'important');
         }
-        ancestor = ancestor.parentElement;
+        anc = anc.parentElement;
       }
-
-      await sleep(100);
-
-      // Click with full event sequence
-      const rect = moreBtn.getBoundingClientRect();
-      const cx = rect.left + rect.width / 2;
-      const cy = rect.top + rect.height / 2;
-      moreBtn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
-      await sleep(30);
-      moreBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
-      await sleep(30);
-      moreBtn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
-      moreBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
-      moreBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
-      moreBtn.click();
-      await sleep(600);
-
-      // Restore original styles
-      moreBtn.style.display = origDisplay;
-      moreBtn.style.visibility = origVisibility;
-      moreBtn.style.opacity = origOpacity;
-      moreBtn.style.pointerEvents = origPointerEvents;
-      for (const h of hiddenAncestors) {
-        h.el.style.display = h.origDisplay;
-        h.el.style.visibility = h.origVisibility;
-        h.el.style.opacity = h.origOpacity;
-      }
+      await sleep(300);
     }
 
-    // Step B: Find "Incluir no comando" in the context menu that appeared
-    await sleep(200);
-    let incluirMenuItem = null;
+    // Common event properties — include composed, view, detail
+    const evtBase = {
+      bubbles: true, cancelable: true, composed: true, view: window,
+      clientX: bx, clientY: by,
+      screenX: bx + (window.screenX || 0), screenY: by + (window.screenY || 0),
+      pageX: bx + window.scrollX, pageY: by + window.scrollY,
+      button: 0, detail: 1
+    };
 
-    // Search for the menu item by text
-    const menuItems = document.querySelectorAll(
-      '[role="menuitem"], [role="option"], button, [role="button"], a'
-    );
-    for (const item of menuItems) {
-      if (item.closest('#veo3-panel, #veo3-bubble')) continue;
-      const text = (item.textContent || '').toLowerCase();
-      if (text.includes('incluir no comando') || text.includes('include in prompt') ||
-        text.includes('incluir') && text.includes('comando')) {
-        incluirMenuItem = item;
-        console.log(`🎭 ${label}: found "Incluir no comando" → <${item.tagName}> text="${(item.textContent || '').trim().substring(0, 40)}"`);
-        break;
+    // Helper: check if menu opened
+    const checkMenu = () => {
+      // Check role="menu" first
+      let m = document.querySelector('[role="menu"]');
+      if (m && m.getBoundingClientRect().width > 0) return m;
+      // Check any visible popup
+      const popups = document.querySelectorAll('[role="menu"], [role="listbox"], [class*="dropdown"], [class*="popup"], [class*="menu"]');
+      for (const p of popups) {
+        if (p.closest('#veo3-panel, #veo3-bubble')) continue;
+        const r = p.getBoundingClientRect();
+        if (r.width > 50 && r.height > 50) return p;
       }
-    }
+      return null;
+    };
 
-    // Also try: search by "add" icon near menu items
-    if (!incluirMenuItem) {
-      const icons = document.querySelectorAll('i.google-symbols');
-      for (const icon of icons) {
-        if ((icon.textContent || '').trim() === 'add') {
-          const parent = icon.closest('button, [role="menuitem"], [role="button"], a, li, div');
-          if (parent && parent.offsetParent !== null) {
-            const text = (parent.textContent || '').toLowerCase();
-            if (text.includes('incluir') || text.includes('include')) {
-              incluirMenuItem = parent;
-              console.log(`🎭 ${label}: found "Incluir" via add icon → <${parent.tagName}>`);
-              break;
+    let menu = null;
+
+    // Determine click target (button or element actually on top)
+    const topEl = document.elementFromPoint(bx, by);
+    const clickTarget = (topEl === moreBtn || moreBtn.contains(topEl) ||
+      topEl?.closest('button') === moreBtn) ? moreBtn : (topEl || moreBtn);
+    console.log(`🎭 ${label}: topElement at ⋮ = <${topEl?.tagName}> cls="${(topEl?.className || '').toString().substring(0, 30)}"`);
+
+    // ─── Strategy 0: Direct __reactProps$ onClick invocation ────────────
+    // The ⋮ button has __reactProps$ with onClick handler (confirmed by diagnostic).
+    // Call it directly — bypasses event delegation entirely, no trusted event needed.
+    {
+      const propsKey = Object.keys(moreBtn).find(k => k.startsWith('__reactProps$'));
+      if (propsKey && moreBtn[propsKey]) {
+        const reactProps = moreBtn[propsKey];
+        const handlers = ['onClick', 'onMouseDown', 'onPointerDown'];
+        for (const hn of handlers) {
+          if (typeof reactProps[hn] === 'function' && !menu) {
+            console.log(`🎭 ${label}: Strategy 0: invoking __reactProps$.${hn} directly...`);
+            try {
+              const evt = new MouseEvent('click', {
+                bubbles: true, cancelable: true, composed: true, view: window,
+                clientX: bx, clientY: by, button: 0, detail: 1
+              });
+              // Add SyntheticEvent-like methods React handlers may call
+              evt.persist = () => { };
+              evt.isDefaultPrevented = () => false;
+              evt.isPropagationStopped = () => false;
+              reactProps[hn](evt);
+              await sleep(600);
+              menu = checkMenu();
+              if (menu) {
+                console.log(`🎭 ${label}: S0 __reactProps$.${hn} → menu: YES ✅`);
+                break;
+              }
+              console.log(`🎭 ${label}: S0 __reactProps$.${hn} → menu: NO`);
+            } catch (e) {
+              console.warn(`🎭 ${label}: S0 ${hn} error: ${e.message}`);
             }
           }
         }
+      } else {
+        console.log(`🎭 ${label}: S0 skipped — no __reactProps$ on button`);
+      }
+    }
+
+    // ─── Strategy 1: Full pointer+mouse lifecycle (with composed+view+detail) ─
+    if (!menu) {
+      console.log(`🎭 ${label}: Strategy 1: full event lifecycle...`);
+      // First hover directly over the ⋮ button
+      moreBtn.dispatchEvent(new PointerEvent('pointerover', { ...evtBase, pointerId: 1, pointerType: 'mouse' }));
+      moreBtn.dispatchEvent(new PointerEvent('pointerenter', { ...evtBase, bubbles: false, pointerId: 1, pointerType: 'mouse' }));
+      moreBtn.dispatchEvent(new MouseEvent('mouseover', evtBase));
+      moreBtn.dispatchEvent(new MouseEvent('mouseenter', { ...evtBase, bubbles: false }));
+      await sleep(100);
+      moreBtn.dispatchEvent(new PointerEvent('pointermove', { ...evtBase, pointerId: 1, pointerType: 'mouse' }));
+      moreBtn.dispatchEvent(new MouseEvent('mousemove', evtBase));
+      await sleep(100);
+      // Press
+      moreBtn.dispatchEvent(new PointerEvent('pointerdown', { ...evtBase, pointerId: 1, pointerType: 'mouse', buttons: 1 }));
+      moreBtn.dispatchEvent(new MouseEvent('mousedown', { ...evtBase, buttons: 1 }));
+      moreBtn.focus({ preventScroll: true });
+      await sleep(100);
+      // Release
+      moreBtn.dispatchEvent(new PointerEvent('pointerup', { ...evtBase, pointerId: 1, pointerType: 'mouse', buttons: 0 }));
+      moreBtn.dispatchEvent(new MouseEvent('mouseup', { ...evtBase, buttons: 0 }));
+      await sleep(30);
+      // Click
+      moreBtn.dispatchEvent(new MouseEvent('click', evtBase));
+      await sleep(600);
+      menu = checkMenu();
+      console.log(`🎭 ${label}: S1 result → menu: ${menu ? 'YES' : 'NO'}`);
+    }
+    // ─── Strategy 2: Plain native .click() ─────────────────────────────────
+    if (!menu) {
+      console.log(`🎭 ${label}: Strategy 2: native .click()...`);
+      moreBtn.click();
+      await sleep(600);
+      menu = checkMenu();
+      console.log(`🎭 ${label}: S2 result → menu: ${menu ? 'YES' : 'NO'}`);
+    }
+
+    // ─── Strategy 2b: Click on the topEl if different from moreBtn ──────────
+    if (!menu && clickTarget !== moreBtn) {
+      console.log(`🎭 ${label}: Strategy 2b: clicking topElement...`);
+      clickTarget.dispatchEvent(new PointerEvent('pointerdown', { ...evtBase, pointerId: 1, pointerType: 'mouse', buttons: 1 }));
+      clickTarget.dispatchEvent(new MouseEvent('mousedown', { ...evtBase, buttons: 1 }));
+      await sleep(80);
+      clickTarget.dispatchEvent(new PointerEvent('pointerup', { ...evtBase, pointerId: 1, pointerType: 'mouse', buttons: 0 }));
+      clickTarget.dispatchEvent(new MouseEvent('mouseup', { ...evtBase, buttons: 0 }));
+      clickTarget.click();
+      await sleep(600);
+      menu = checkMenu();
+    }
+
+    // ─── Strategy 3: Focus + Enter key ─────────────────────────────────────
+    if (!menu) {
+      console.log(`🎭 ${label}: Strategy 3: focus + Enter...`);
+      moreBtn.focus({ preventScroll: true });
+      await sleep(150);
+      const kbBase = { bubbles: true, cancelable: true, composed: true, view: window };
+      moreBtn.dispatchEvent(new KeyboardEvent('keydown', { ...kbBase, key: 'Enter', code: 'Enter', keyCode: 13 }));
+      await sleep(60);
+      moreBtn.dispatchEvent(new KeyboardEvent('keypress', { ...kbBase, key: 'Enter', code: 'Enter', keyCode: 13 }));
+      await sleep(60);
+      moreBtn.dispatchEvent(new KeyboardEvent('keyup', { ...kbBase, key: 'Enter', code: 'Enter', keyCode: 13 }));
+      await sleep(600);
+      menu = checkMenu();
+      console.log(`🎭 ${label}: S3 Enter → menu: ${menu ? 'YES' : 'NO'}`);
+    }
+
+    // ─── Strategy 4: Focus + Space key ─────────────────────────────────────
+    if (!menu) {
+      console.log(`🎭 ${label}: Strategy 4: focus + Space...`);
+      moreBtn.focus({ preventScroll: true });
+      await sleep(100);
+      const kbBase = { bubbles: true, cancelable: true, composed: true, view: window };
+      moreBtn.dispatchEvent(new KeyboardEvent('keydown', { ...kbBase, key: ' ', code: 'Space', keyCode: 32 }));
+      await sleep(60);
+      moreBtn.dispatchEvent(new KeyboardEvent('keyup', { ...kbBase, key: ' ', code: 'Space', keyCode: 32 }));
+      await sleep(600);
+      menu = checkMenu();
+      console.log(`🎭 ${label}: S4 Space → menu: ${menu ? 'YES' : 'NO'}`);
+    }
+
+    // ─── Strategy 5: Walk ANCESTOR chain to find React fiber, invoke handler ─
+    if (!menu) {
+      console.log(`🎭 ${label}: Strategy 5: walking ancestor React fiber tree...`);
+      let reactEl = moreBtn;
+      let ancFiber = null;
+      for (let i = 0; i < 20 && reactEl; i++) {
+        const keys = Object.keys(reactEl);
+        const fk = keys.find(k => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
+        if (fk) {
+          ancFiber = reactEl[fk];
+          console.log(`🎭 ${label}: found React fiber ${i} levels up on <${reactEl.tagName}>`);
+          break;
+        }
+        reactEl = reactEl.parentElement;
+      }
+
+      if (ancFiber) {
+        // Walk DOWN the fiber tree (child/sibling) to find click-like handlers
+        const fakeEvent = {
+          target: moreBtn, currentTarget: moreBtn,
+          clientX: bx, clientY: by, button: 0,
+          preventDefault: () => { }, stopPropagation: () => { },
+          nativeEvent: new MouseEvent('click', { bubbles: true, clientX: bx, clientY: by }),
+          bubbles: true, cancelable: true, type: 'click', isTrusted: true, detail: 1
+        };
+
+        // BFS through fiber nodes
+        const queue = [ancFiber];
+        const visited = new Set();
+        let handlerFound = false;
+        while (queue.length > 0 && !menu && !handlerFound) {
+          const f = queue.shift();
+          if (!f || visited.has(f)) continue;
+          visited.add(f);
+          if (visited.size > 100) break; // safety limit
+
+          const props = f.memoizedProps || f.pendingProps;
+          if (props) {
+            const handlerNames = ['onClick', 'onPointerDown', 'onPointerUp', 'onMouseDown', 'onPress'];
+            for (const hn of handlerNames) {
+              if (typeof props[hn] === 'function') {
+                try {
+                  console.log(`🎭 ${label}: invoking fiber handler ${hn}...`);
+                  props[hn](fakeEvent);
+                  await sleep(500);
+                  menu = checkMenu();
+                  if (menu) { handlerFound = true; break; }
+                } catch (e) {
+                  console.warn(`🎭 ${label}: fiber handler ${hn} error: ${e.message}`);
+                }
+              }
+            }
+          }
+
+          // Add children and siblings to queue
+          if (f.child) queue.push(f.child);
+          if (f.sibling) queue.push(f.sibling);
+          // Also go up one level and try siblings there
+          if (f.return && !visited.has(f.return)) queue.push(f.return);
+        }
+        console.log(`🎭 ${label}: S5 fiber walk → menu: ${menu ? 'YES' : 'NO'} (visited ${visited.size} nodes)`);
+      } else {
+        console.log(`🎭 ${label}: S5 skipped — no React fiber found in ancestor chain`);
+      }
+    }
+
+    // ─── Strategy 6: triggerReactClick on button + icon ─────────────────────
+    if (!menu) {
+      console.log(`🎭 ${label}: Strategy 6: triggerReactClick...`);
+      triggerReactClick(moreBtn);
+      const icon = moreBtn.querySelector('i, span, svg');
+      if (icon) triggerReactClick(icon);
+      await sleep(700);
+      menu = checkMenu();
+      console.log(`🎭 ${label}: S6 result → menu: ${menu ? 'YES' : 'NO'}`);
+    }
+
+    // ─── Strategy 7: Dispatch events at document/root level (React 17 delegation) ─
+    if (!menu) {
+      console.log(`🎭 ${label}: Strategy 7: document-level event dispatch...`);
+      // React 17+ attaches its event listeners to the root container
+      // Dispatch a fresh click with correct coordinates — the target will be
+      // whatever is at those coordinates per the browser's hit testing
+      const clickEvt = new MouseEvent('click', {
+        bubbles: true, cancelable: true, composed: true, view: window,
+        clientX: bx, clientY: by, button: 0, detail: 1
+      });
+      // Dispatch on the element that's actually at those coordinates
+      const target = document.elementFromPoint(bx, by);
+      if (target) {
+        target.dispatchEvent(new PointerEvent('pointerdown', { ...evtBase, pointerId: 1, pointerType: 'mouse', buttons: 1 }));
+        await sleep(50);
+        target.dispatchEvent(new PointerEvent('pointerup', { ...evtBase, pointerId: 1, pointerType: 'mouse', buttons: 0 }));
+        await sleep(30);
+        target.dispatchEvent(clickEvt);
+        await sleep(600);
+        menu = checkMenu();
+        console.log(`🎭 ${label}: S7 result → menu: ${menu ? 'YES' : 'NO'}`);
+      }
+    }
+
+    // Restore forced styles
+    for (const { el, orig } of forcedElements) {
+      el.style.display = orig.display;
+      el.style.visibility = orig.visibility;
+      el.style.opacity = orig.opacity;
+      el.style.pointerEvents = orig.pointerEvents;
+    }
+
+    // Find "Incluir no comando" in the menu
+    let incluirMenuItem = null;
+    if (menu) {
+      const items = menu.querySelectorAll('[role="menuitem"], button, li, div, a, span');
+      for (const item of items) {
+        const text = (item.textContent || '').toLowerCase().trim();
+        if (text.includes('incluir no comando') || text.includes('include in prompt') || text.includes('incluir')) {
+          incluirMenuItem = item;
+          console.log(`🎭 ${label}: found "${text}" in ⋮ menu`);
+          break;
+        }
+      }
+    }
+
+    // Global scan fallback
+    if (!incluirMenuItem) {
+      const allEls = document.querySelectorAll('[role="menuitem"], [role="option"], li, button, div, span, a');
+      for (const el of allEls) {
+        if (el.closest('#veo3-panel, #veo3-bubble')) continue;
+        const text = (el.textContent || '').toLowerCase().trim();
+        if (text.length > 80) continue;
+        if (text.includes('incluir no comando') || text.includes('include in prompt')) {
+          const r = el.getBoundingClientRect();
+          if (r.width > 0 && r.height > 0) { incluirMenuItem = el; break; }
+        }
       }
     }
 
     if (!incluirMenuItem) {
-      console.warn(`🎭 ${label}: "Incluir no comando" menu item NOT found`);
-      // Close menu by pressing Escape
+      console.warn(`🎭 ${label}: "Incluir no comando" NOT found via ⋮ menu either`);
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
       await sleep(200);
+      hoverEl.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }));
       return false;
     }
 
-    // Step C: Click "Incluir no comando"
-    console.log(`🎭 ${label}: clicking "Incluir no comando"...`);
-    const miRect = incluirMenuItem.getBoundingClientRect();
-    const miCx = miRect.left + miRect.width / 2;
-    const miCy = miRect.top + miRect.height / 2;
-    incluirMenuItem.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: miCx, clientY: miCy }));
-    await sleep(30);
-    incluirMenuItem.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: miCx, clientY: miCy }));
-    await sleep(30);
-    incluirMenuItem.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: miCx, clientY: miCy }));
-    incluirMenuItem.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: miCx, clientY: miCy }));
-    incluirMenuItem.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: miCx, clientY: miCy }));
+    // Click "Incluir no comando" menu item
+    console.log(`🎭 ${label}: clicking "Incluir no comando" from ⋮ menu...`);
     incluirMenuItem.click();
-
     await sleep(500);
-    console.log(`🎭 ✅ ${label}: "Incluir no comando" clicked!`);
+    triggerReactClick(incluirMenuItem);
+    await sleep(500);
+    console.log(`🎭 ✅ ${label}: "Incluir no comando" clicked via ⋮ menu!`);
+    hoverEl.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }));
     return true;
   }
 
@@ -2181,9 +2948,9 @@
     state.imageSelectionInProgress = true;
 
     try {
-      // VEO3 Flow shows images and videos on the SAME page (no separate tabs)
-      console.log(`🎭 Scanning page for @Name: patterns... (looking for: ${characterNames.join(', ')})`);
+      console.log(`🎭 Selecting characters via ⋮ → Incluir: ${characterNames.join(', ')}`);
 
+      // Find character cards on the page by @Name: patterns
       const cardMap = findCharacterCards();
 
       if (cardMap.size === 0) {
@@ -2191,44 +2958,32 @@
         return { success: false, count: 0, error: 'Nenhum personagem @Nome encontrado na página' };
       }
 
-      // Match requested names to found cards (exact + fuzzy)
-      const matched = [];
-      const notFound = [];
+      let count = 0;
+
       for (const name of characterNames) {
-        if (cardMap.has(name)) {
-          matched.push({ name, card: cardMap.get(name) });
-        } else {
-          let found = false;
-          for (const [key, card] of cardMap) {
+        // Match name to card (exact + fuzzy)
+        let card = cardMap.get(name);
+        if (!card) {
+          for (const [key, c] of cardMap) {
             if (key.startsWith(name) || name.startsWith(key) || key.includes(name) || name.includes(key)) {
-              matched.push({ name, card });
+              card = c;
               console.log(`🎭 Fuzzy match: "${name}" → "${key}"`);
-              found = true;
               break;
             }
           }
-          if (!found) notFound.push(name);
         }
-      }
 
-      if (notFound.length > 0) {
-        console.warn(`⚠️ Characters not found on page: ${notFound.join(', ')}`);
-        updateStatus(`⚠️ Não encontrado(s): ${notFound.join(', ')}`);
-      }
+        if (!card) {
+          console.warn(`🎭 @${name}: card not found on page`);
+          updateStatus(`🎭 ⚠️ @${name}: não encontrado na página`);
+          continue;
+        }
 
-      if (matched.length === 0) {
-        return { success: false, count: 0, error: `Personagens não encontrados: ${characterNames.join(', ')}` };
-      }
-
-      console.log(`🎭 Selecting ${matched.length} character(s): ${matched.map(m => m.name).join(', ')}`);
-
-      // For each matched character: open ⋮ menu → click "Incluir no comando"
-      let count = 0;
-      for (const { name, card } of matched) {
         // Scroll card into view
         card.scrollIntoView({ behavior: 'smooth', block: 'center' });
         await sleep(400);
 
+        // Click ⋮ → "Incluir no comando"
         const success = await includeCardViaContextMenu(card, `@${name}`);
         if (success) {
           count++;
@@ -2240,7 +2995,7 @@
         await sleep(CONFIG.IMAGE_SELECT_DELAY);
       }
 
-      console.log(`🎭 Character selection complete: ${count}/${matched.length} included`);
+      console.log(`🎭 Character selection complete: ${count}/${characterNames.length} included`);
       return { success: count > 0, count, error: null };
     } catch (err) {
       console.error(`❌ selectCharacterImages error: ${err.message}`);
@@ -2251,7 +3006,7 @@
   }
 
   // ============================================================================
-  // IMAGE-BY-KEYWORD SELECTION (via "+" button → resource panel)
+  // IMAGE-BY-KEYWORD SELECTION (via ⋮ → "Incluir no comando")
   // ============================================================================
 
   // Remove images/thumbnails already attached to the prompt area
@@ -2319,251 +3074,177 @@
     return cleared;
   }
 
-  // Open the resource panel by clicking the "+" button near the prompt area
-  // Returns: the button element or null
-  async function openResourcePanel() {
-    // Strategy 1: Find "+" / "add" button near the textarea
-    const addButtons = document.querySelectorAll('button, [role="button"]');
-    let addBtn = null;
-
-    for (const btn of addButtons) {
-      if (btn.closest('#veo3-panel, #veo3-bubble')) continue;
-      const icon = btn.querySelector('i.google-symbols');
-      const iconText = icon ? (icon.textContent || '').trim() : '';
-      const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
-      const title = (btn.getAttribute('title') || '').toLowerCase();
-
-      if (iconText === 'add' || iconText === 'add_circle' || iconText === 'add_circle_outline' ||
-        ariaLabel.includes('adicionar') || ariaLabel.includes('add') ||
-        ariaLabel.includes('recurso') || ariaLabel.includes('resource') ||
-        title.includes('adicionar') || title.includes('add')) {
-        // Must be near the prompt input (not a random add button)
-        const textarea = document.querySelector('textarea, [contenteditable="true"]');
-        if (textarea) {
-          const textRect = textarea.getBoundingClientRect();
-          const btnRect = btn.getBoundingClientRect();
-          // Check proximity: within 200px vertically
-          if (Math.abs(btnRect.top - textRect.top) < 200) {
-            addBtn = btn;
-            break;
-          }
-        } else {
-          addBtn = btn;
-          break;
-        }
-      }
-    }
-
-    if (!addBtn) {
-      console.warn('🖼️ openResourcePanel: "+" button not found');
-      return null;
-    }
-
-    console.log(`🖼️ Opening resource panel via "+" button...`);
-    const rect = addBtn.getBoundingClientRect();
-    const cx = rect.left + rect.width / 2;
-    const cy = rect.top + rect.height / 2;
-    addBtn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
-    await sleep(30);
-    addBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
-    await sleep(30);
-    addBtn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
-    addBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
-    addBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
-    addBtn.click();
-
-    await sleep(800); // Wait for popup animation
-    return addBtn;
-  }
-
-  // Close the resource panel by pressing Escape or clicking outside
-  async function closeResourcePanel() {
-    document.dispatchEvent(new KeyboardEvent('keydown', {
-      key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true
-    }));
-    await sleep(400);
-  }
-
-  // Find images listed in the resource panel popup
-  // Returns: Array<{ element, title, index }>
-  function findResourceImages() {
-    const results = [];
-
-    // The resource panel shows a list of items with thumbnails + titles
-    // Strategy 1: Search for items with images + text in overlay/dialog/popup containers
-    const panels = document.querySelectorAll(
-      '[role="dialog"], [role="listbox"], [role="menu"], [role="list"], ' +
-      '[class*="popup"], [class*="overlay"], [class*="modal"], [class*="dropdown"], ' +
-      '[class*="panel"], [class*="resource"], [class*="picker"], [class*="selector"]'
-    );
-
-    for (const panel of panels) {
-      if (panel.closest('#veo3-panel, #veo3-bubble')) continue;
-      if (panel.offsetParent === null && panel.style.display !== 'contents') continue;
-
-      // Find items inside the panel
-      const items = panel.querySelectorAll(
-        '[role="option"], [role="listitem"], [role="menuitem"], ' +
-        'li, [class*="item"], [class*="card"], [class*="row"]'
-      );
-
-      for (const item of items) {
-        const img = item.querySelector('img');
-        if (!img) continue;
-
-        // Get the title text: aria-label, text content, alt, or title
-        let title = item.getAttribute('aria-label') || '';
-        if (!title) {
-          // Get text content excluding deeply nested elements
-          const textNodes = [];
-          const walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT);
-          let n;
-          while ((n = walker.nextNode())) {
-            const t = (n.textContent || '').trim();
-            if (t.length > 2) textNodes.push(t);
-          }
-          title = textNodes.join(' ');
-        }
-        if (!title) {
-          title = img.alt || img.title || img.getAttribute('aria-label') || '';
-        }
-
-        if (title.length > 0) {
-          results.push({
-            element: item,
-            title: title.trim(),
-            index: results.length + 1 // 1-based
-          });
-        }
-      }
-
-      if (results.length > 0) break; // Found items in this panel, stop
-    }
-
-    // Strategy 2: If no panel found, search for recently-appeared elements with images
-    if (results.length === 0) {
-      const allImgs = document.querySelectorAll('img');
-      const seen = new Set();
-      for (const img of allImgs) {
-        if (img.closest('#veo3-panel, #veo3-bubble')) continue;
-        const rect = img.getBoundingClientRect();
-        // Resource panel images are small thumbnails (40-80px) in a vertical list
-        if (rect.width >= 30 && rect.width <= 120 && rect.height >= 30 && rect.height <= 120) {
-          const container = img.closest('li, [role="option"], [role="listitem"], [class*="item"]');
-          if (!container || seen.has(container)) continue;
-          seen.add(container);
-
-          let title = container.textContent?.trim() || img.alt || img.title || '';
-          if (title.length > 0) {
-            results.push({
-              element: container,
-              title: title,
-              index: results.length + 1
-            });
-          }
-        }
-      }
-    }
-
-    console.log(`🖼️ findResourceImages: found ${results.length} resource image(s):`, results.map(r => `[${r.index}] ${r.title.substring(0, 40)}`));
-    return results;
-  }
-
-  // Select images by keyword/index from the resource panel
-  // keywords: array of lowercase strings (e.g., ["macaw", "2"])
-  async function selectImagesByKeywords(keywords) {
+  // Select images by keyword/name or by numeric index via hover → "Incluir no comando"
+  // keywords: array of strings, e.g. ["stone cave", "meditation"] or ["1", "3"]
+  // Numeric keywords select by position (1-based index on the page)
+  // skipClear: if true, don't clear attached images first (used when CHARS already selected)
+  async function selectImagesByKeywords(keywords, skipClear = false) {
     if (state.imageSelectionInProgress) {
       return { success: false, count: 0, error: 'Seleção já em andamento' };
     }
     state.imageSelectionInProgress = true;
 
     try {
-      // Step 1: Clear any previously attached images
-      await clearAttachedImages();
+      console.log(`🖼️ Selecting images by keywords: ${keywords.join(', ')}`);
 
-      let totalSelected = 0;
+      // Find ALL image cards on the page
+      const imageCards = findImageCards();
 
-      // We select one image at a time: open panel → find → click → panel closes → repeat
-      for (const keyword of keywords) {
-        console.log(`🖼️ Selecting image for keyword: "${keyword}"...`);
-
-        // Open resource panel
-        const panelBtn = await openResourcePanel();
-        if (!panelBtn) {
-          console.warn(`🖼️ Could not open resource panel for keyword "${keyword}"`);
-          continue;
-        }
-
-        // Find available images
-        const images = findResourceImages();
-        if (images.length === 0) {
-          console.warn('🖼️ No images found in resource panel');
-          await closeResourcePanel();
-          continue;
-        }
-
-        // Match by index (numeric keyword) or title (text keyword)
-        let target = null;
-        const isNumeric = /^\d+$/.test(keyword);
-
-        if (isNumeric) {
-          const idx = parseInt(keyword);
-          target = images.find(img => img.index === idx);
-          if (!target) {
-            console.warn(`🖼️ Index ${idx} out of range (${images.length} images available)`);
-          }
-        } else {
-          // Fuzzy text match: substring in title (case-insensitive)
-          target = images.find(img => img.title.toLowerCase().includes(keyword));
-          if (!target) {
-            // Try matching start of each word
-            target = images.find(img => {
-              const words = img.title.toLowerCase().split(/\s+/);
-              return words.some(w => w.startsWith(keyword) || keyword.startsWith(w));
-            });
-          }
-          if (!target) {
-            console.warn(`🖼️ No image matching keyword "${keyword}" in titles: ${images.map(i => i.title.substring(0, 30)).join(', ')}`);
-          }
-        }
-
-        if (target) {
-          // Click the matched item to include it
-          console.log(`🖼️ Clicking resource image: [${target.index}] "${target.title.substring(0, 50)}"`);
-          target.element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          await sleep(200);
-
-          const rect = target.element.getBoundingClientRect();
-          const cx = rect.left + rect.width / 2;
-          const cy = rect.top + rect.height / 2;
-          target.element.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
-          await sleep(30);
-          target.element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
-          await sleep(30);
-          target.element.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
-          target.element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
-          target.element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
-          target.element.click();
-
-          totalSelected++;
-          console.log(`🖼️ ✅ Image "${target.title.substring(0, 30)}" selected!`);
-          await sleep(CONFIG.IMAGE_SELECT_DELAY);
-        }
-
-        // Close panel (it may auto-close after selection, but ensure it)
-        await closeResourcePanel();
-        await sleep(300);
+      if (imageCards.length === 0) {
+        console.warn('⚠️ No image cards found on page for [IMGS] selection');
+        return { success: false, count: 0, error: 'Nenhuma imagem encontrada na página' };
       }
 
-      console.log(`🖼️ Image keyword selection complete: ${totalSelected}/${keywords.length} selected`);
-      return { success: totalSelected > 0, count: totalSelected, error: null };
+      // Build a rich text index for each image card
+      const cardTexts = imageCards.map(({ element: card, img }, idx) => {
+        const parts = [];
+
+        // 1. Walk up to find a row container with meaningful text
+        let row = card;
+        let rowContainer = card;
+        for (let i = 0; i < 15 && row; i++) {
+          const rect = row.getBoundingClientRect();
+          // Lower threshold: individual cards are ~700px wide
+          if (rect.width > 400 && rect.height > 80) {
+            rowContainer = row;
+            // Get ALL text content from this container
+            const text = (row.textContent || '').trim();
+            if (text.length > 0 && text.length < 5000) {
+              parts.push(text);
+            }
+            break;
+          }
+          row = row.parentElement;
+        }
+
+        // 2. Get text from the card itself
+        const cardText = (card.textContent || '').trim();
+        if (cardText.length > 0 && cardText.length < 2000) {
+          parts.push(cardText);
+        }
+
+        // 3. Get image attributes
+        if (img) {
+          const attrs = [img.alt, img.title, img.getAttribute('aria-label')].filter(Boolean);
+          parts.push(...attrs);
+        }
+
+        // 4. Scan SIBLING elements of the card for prompt/description text
+        // VEO3 often puts the prompt text in a sibling <div> to the image card
+        if (card.parentElement) {
+          for (const sibling of card.parentElement.children) {
+            if (sibling === card) continue;
+            const sibText = (sibling.textContent || '').trim();
+            if (sibText.length > 3 && sibText.length < 2000) {
+              parts.push(sibText);
+            }
+          }
+        }
+
+        // 5. Also check the next/previous siblings of the row container
+        if (rowContainer && rowContainer !== card) {
+          const prev = rowContainer.previousElementSibling;
+          const next = rowContainer.nextElementSibling;
+          if (prev) {
+            const prevText = (prev.textContent || '').trim();
+            if (prevText.length > 3 && prevText.length < 500) parts.push(prevText);
+          }
+          if (next) {
+            const nextText = (next.textContent || '').trim();
+            if (nextText.length > 3 && nextText.length < 500) parts.push(nextText);
+          }
+        }
+
+        const fullText = parts.join(' ').toLowerCase();
+        console.log(`🖼️  Card[${idx + 1}] text (${fullText.length} chars): "${fullText.substring(0, 100)}..."`);
+        return { card, row: rowContainer, text: fullText, index: idx + 1 };
+      });
+
+      console.log(`🖼️ Built text index for ${cardTexts.length} image cards`);
+
+      let count = 0;
+
+      for (const keyword of keywords) {
+        const kw = keyword.toLowerCase().trim();
+        if (!kw) continue;
+
+        let targetEntry = null;
+
+        // Check if keyword is a numeric index (e.g., "1", "2", "3")
+        const numIdx = parseInt(kw, 10);
+        if (!isNaN(numIdx) && String(numIdx) === kw && numIdx >= 1 && numIdx <= cardTexts.length) {
+          targetEntry = cardTexts[numIdx - 1];
+          console.log(`🖼️ "${keyword}" → selecting image #${numIdx} by index`);
+        }
+
+        // Text-based matching
+        if (!targetEntry) {
+          let bestMatch = null;
+          let bestScore = 0;
+
+          for (const ct of cardTexts) {
+            if (!ct.text.includes(kw)) continue;
+            // Score: prefer exact word boundary match
+            const wordMatch = ct.text.includes(' ' + kw + ' ') || ct.text.includes(kw + ' ') ||
+              ct.text.startsWith(kw) || ct.text.includes(' ' + kw);
+            const score = wordMatch ? 2 : 1;
+            if (score > bestScore) {
+              bestScore = score;
+              bestMatch = ct;
+            }
+          }
+
+          if (!bestMatch) {
+            // Try matching individual words from the keyword
+            const kwWords = kw.split(/\s+/);
+            if (kwWords.length > 1) {
+              for (const ct of cardTexts) {
+                const matchedWords = kwWords.filter(w => ct.text.includes(w));
+                const score = matchedWords.length / kwWords.length;
+                if (score > 0.5 && score > bestScore) {
+                  bestScore = score;
+                  bestMatch = ct;
+                }
+              }
+            }
+          }
+
+          if (bestMatch) {
+            targetEntry = bestMatch;
+            console.log(`🖼️ "${keyword}" matched card[${targetEntry.index}] with text: "${targetEntry.text.substring(0, 80)}..."`);
+          }
+        }
+
+        if (!targetEntry) {
+          console.log(`🖼️ "${keyword}": no matching image card (this is normal if keyword doesn't match image titles)`);
+          continue;
+        }
+
+        // Include via hover → Incluir button
+        const targetCard = targetEntry.row;
+        targetCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        await sleep(400);
+
+        const success = await includeCardViaContextMenu(targetCard, `[IMGS] "${keyword}"`);
+        if (success) {
+          count++;
+          updateStatus(`🖼️ ✅ "${keyword}" incluído no comando`);
+        } else {
+          updateStatus(`🖼️ ⚠️ "${keyword}": não conseguiu incluir`);
+        }
+
+        await sleep(CONFIG.IMAGE_SELECT_DELAY);
+      }
+
+      console.log(`🖼️ Image keyword selection complete: ${count}/${keywords.length} included`);
+      return { success: count > 0, count, error: null };
     } catch (err) {
       console.error(`❌ selectImagesByKeywords error: ${err.message}`);
-      await closeResourcePanel();
       return { success: false, count: 0, error: err.message };
     } finally {
       state.imageSelectionInProgress = false;
     }
+
   }
 
   // ============================================================================
@@ -3911,6 +4592,252 @@
     }
   }
 
+  // Scroll through the entire page to collect ALL large image URLs
+  // VEO3 uses virtual scrolling — only ~5 items are rendered at a time
+  // Tries multiple scroll strategies to find the actual scrollable container
+  async function scrollToCollectAllImages() {
+    const collected = new Map(); // src → { src, alt } (deduped by src)
+
+    // Helper: collect all large images currently in DOM
+    function collectVisibleImages() {
+      const imgs = document.querySelectorAll('img');
+      let newCount = 0;
+      for (const img of imgs) {
+        if (img.closest('#veo3-panel, #veo3-bubble')) continue;
+        if (!img.src || img.src.startsWith('data:')) continue;
+        const w = img.naturalWidth || img.width || img.getBoundingClientRect().width;
+        const h = img.naturalHeight || img.height || img.getBoundingClientRect().height;
+        if (w > 150 && h > 150 && !collected.has(img.src)) {
+          collected.set(img.src, { src: img.src, alt: img.alt || '' });
+          newCount++;
+        }
+      }
+      return newCount;
+    }
+
+    // Find VEO3's actual scrollable container (brute-force approach)
+    // VEO3 uses styled-components with sc-* classes, so we check ALL elements
+    let scrollContainer = null;
+    const allElements = document.querySelectorAll('div, main, section');
+    for (const el of allElements) {
+      if (el.closest('#veo3-panel, #veo3-bubble')) continue;
+      const style = getComputedStyle(el);
+      if ((style.overflowY === 'auto' || style.overflowY === 'scroll') &&
+        el.scrollHeight > el.clientHeight + 200 &&
+        el.clientHeight > 300) {
+        // Prefer the largest scrollable container
+        if (!scrollContainer || el.scrollHeight > scrollContainer.scrollHeight) {
+          scrollContainer = el;
+        }
+      }
+    }
+
+    if (scrollContainer) {
+      console.log(`📜 scrollToCollectAllImages: found scrollable container ${scrollContainer.tagName}.${(scrollContainer.className || '').toString().substring(0, 30)} scrollHeight=${scrollContainer.scrollHeight} clientHeight=${scrollContainer.clientHeight}`);
+    } else {
+      console.log(`📜 scrollToCollectAllImages: no inner scrollable found, using document`);
+    }
+
+    // Save current scroll positions
+    const savedContainerScroll = scrollContainer ? scrollContainer.scrollTop : 0;
+    const savedWindowScroll = window.scrollY;
+
+    // Collect initial images
+    collectVisibleImages();
+
+    // Try scrolling the container (or window)
+    const target = scrollContainer || document.documentElement;
+    const maxHeight = target.scrollHeight;
+    const scrollStep = 300;
+    const viewportHeight = target.clientHeight || window.innerHeight;
+
+    // Scroll to top first
+    target.scrollTop = 0;
+    if (!scrollContainer) window.scrollTo({ top: 0, behavior: 'instant' });
+    await sleep(400);
+    collectVisibleImages();
+
+    console.log(`📜 scrollToCollectAllImages: scrolling ${maxHeight}px in ${scrollStep}px steps...`);
+
+    // Scroll down in increments, collecting images at each position
+    let prevCount = collected.size;
+    let noNewImagesCount = 0;
+
+    for (let pos = 0; pos <= maxHeight; pos += scrollStep) {
+      target.scrollTop = pos;
+      if (!scrollContainer) window.scrollTo({ top: pos, behavior: 'instant' });
+      await sleep(250);
+
+      const newFound = collectVisibleImages();
+      if (newFound > 0) {
+        noNewImagesCount = 0;
+        console.log(`📜 pos=${pos}: +${newFound} images (total: ${collected.size})`);
+      } else {
+        noNewImagesCount++;
+      }
+
+      // If we haven't found new images in 10 consecutive steps AND we're past the first screen, stop
+      if (noNewImagesCount > 15 && pos > viewportHeight * 2) break;
+    }
+
+    // Restore scroll positions
+    if (scrollContainer) {
+      scrollContainer.scrollTop = savedContainerScroll;
+    }
+    window.scrollTo({ top: savedWindowScroll, behavior: 'instant' });
+    await sleep(300);
+
+    console.log(`📜 scrollToCollectAllImages: found ${collected.size} unique images total`);
+    return [...collected.values()];
+  }
+
+  // ── Download all generated images from the page ──
+  async function downloadPageImages() {
+    const dlImagesBtn = document.getElementById('veo3-dl-images-btn');
+
+    // Get folder name
+    const folderInput = document.getElementById('veo3-folder-name');
+    const rawFolderName = (folderInput?.value || '').trim();
+    const folderName = rawFolderName.replace(/[<>:"/\\|?*]/g, '').trim();
+
+    // ── STEP 1: Ask for folder FIRST (while user click gesture is fresh!) ──
+    // showDirectoryPicker requires recent user activation — expires after ~5s
+    let dirHandle = null;
+    if (window.showDirectoryPicker) {
+      try {
+        if (folderName) {
+          updateStatus(`📂 Selecione onde criar a pasta "${folderName}"...`);
+        } else {
+          updateStatus(`📂 Selecione a pasta para salvar as imagens...`);
+        }
+        const parentDir = await window.showDirectoryPicker({ mode: 'readwrite' });
+        if (folderName) {
+          dirHandle = await parentDir.getDirectoryHandle(folderName, { create: true });
+        } else {
+          dirHandle = parentDir;
+        }
+        updateStatus(`📂 Pasta selecionada! Escaneando imagens...`);
+      } catch (err) {
+        if (err.name === 'AbortError') {
+          updateStatus('⚠️ Seleção de pasta cancelada.');
+          return;
+        }
+        console.warn(`⚠️ File System API failed: ${err.message}. Falling back to downloads.`);
+        dirHandle = null;
+      }
+    }
+
+    // Disable button during download
+    if (dlImagesBtn) {
+      dlImagesBtn.disabled = true;
+      dlImagesBtn.style.opacity = '0.5';
+    }
+
+    // ── STEP 2: Scroll to collect ALL images (virtual scrolling bypass) ──
+    updateStatus('🔍 Escaneando página (scroll) para encontrar todas as imagens...');
+    const collectedImages = await scrollToCollectAllImages();
+
+    // Also check currently visible images (in case scroll missed any)
+    const allImgs = document.querySelectorAll('img');
+    for (const img of allImgs) {
+      if (img.closest('#veo3-panel, #veo3-bubble')) continue;
+      if (img.offsetParent === null) continue;
+      if (!img.src || img.src.startsWith('data:')) continue;
+      const w = img.naturalWidth || img.width || img.getBoundingClientRect().width;
+      const h = img.naturalHeight || img.height || img.getBoundingClientRect().height;
+      if (w > 150 && h > 150) {
+        const exists = collectedImages.some(ci => ci.src === img.src);
+        if (!exists) {
+          collectedImages.push({ src: img.src, alt: img.alt || '' });
+        }
+      }
+    }
+
+    const images = collectedImages;
+
+    updateStatus('────────────────────');
+
+    if (images.length === 0) {
+      updateStatus('⚠️ Nenhuma imagem grande encontrada na página.');
+      if (dlImagesBtn) { dlImagesBtn.disabled = false; dlImagesBtn.style.opacity = '1'; }
+      return;
+    }
+
+    // ── STEP 3: Download/save all images ──
+    const useFolder = !!dirHandle;
+    const filePrefix = (!useFolder && folderName) ? `${folderName}-` : (!useFolder ? 'veo3-img-' : '');
+
+    if (useFolder) {
+      updateStatus(`📂 Salvando ${images.length} imagens na pasta...`);
+    } else {
+      updateStatus(`📥 Baixando ${images.length} imagens...`);
+    }
+
+    let downloaded = 0;
+    let failed = 0;
+
+    // VEO3 shows newest images first in DOM — reverse to download in prompt order
+    images.reverse();
+
+    for (let i = 0; i < images.length; i++) {
+      const img = images[i];
+      const num = String(i + 1).padStart(3, '0');
+      const url = img.src;
+
+      try {
+        updateStatus(`  [${num}] ⬇️ Baixando imagem...`);
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const blob = await response.blob();
+
+        // Detect extension from blob type
+        const typeMap = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'image/gif': '.gif' };
+        const ext = typeMap[blob.type] || '.png';
+        const filename = useFolder ? `${num}${ext}` : `${filePrefix}${num}${ext}`;
+
+        if (useFolder) {
+          await saveToFolder(dirHandle, filename, blob);
+          updateStatus(`  [${num}] ✅ ${folderName}/${filename}`);
+        } else {
+          const blobUrl = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = blobUrl;
+          a.download = filename;
+          a.style.display = 'none';
+          document.body.appendChild(a);
+          a.click();
+          setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(blobUrl); }, 1000);
+          updateStatus(`  [${num}] ✅ ${filename}`);
+        }
+        downloaded++;
+      } catch (err) {
+        updateStatus(`  [${num}] ❌ Erro: ${err.message}`);
+        failed++;
+      }
+
+      // Delay between downloads
+      if (i < images.length - 1) {
+        await sleep(500);
+      }
+    }
+
+    updateStatus('────────────────────');
+    updateStatus(`🖼️ Resultado: ${downloaded} baixadas | ${failed} falharam`);
+    if (downloaded > 0) {
+      if (useFolder) {
+        updateStatus(`📂 Arquivos em: ${folderName}/001.png, 002.png, etc`);
+      } else {
+        updateStatus(`📂 Arquivos: ${filePrefix}001.png, etc`);
+      }
+    }
+
+    // Re-enable button
+    if (dlImagesBtn) {
+      dlImagesBtn.disabled = false;
+      dlImagesBtn.style.opacity = '1';
+    }
+  }
+
   // ============================================================================
   // BATCH PROCESS ORCHESTRATION
   // ============================================================================
@@ -3998,7 +4925,16 @@
           // Parse [CHARS: Name1, Name2] and [IMGS: keyword1, 2] directives from prompt
           const { cleanPrompt, characters, imageKeywords } = parseCharsFromPrompt(prompt);
 
-          if (characters.length > 0) {
+          // Image/character selection ONLY runs when the toggle is enabled.
+          // When disabled, directives are silently stripped and the clean prompt is sent normally.
+          const shouldSelectImages = state.includeImagesEnabled;
+
+          // Unified clear: clear attached images ONCE before any selection (CHARS or IMGS)
+          if (shouldSelectImages && (characters.length > 0 || imageKeywords.length > 0)) {
+            await clearAttachedImages();
+          }
+
+          if (shouldSelectImages && characters.length > 0) {
             // Selective: only include named character images (auto-detected by @Name:)
             try {
               updateStatus(`[${paddedNum}] 🎭 Selecionando personagens: ${characters.join(', ')}...`);
@@ -4016,11 +4952,12 @@
             }
           }
 
-          if (imageKeywords.length > 0) {
+          if (shouldSelectImages && imageKeywords.length > 0) {
             // [IMGS: ...] — select images by keyword/index via resource panel
+            // skipClear=true because we already cleared above (preserves CHARS selections)
             try {
               updateStatus(`[${paddedNum}] 🖼️ Selecionando imagens [IMGS: ${imageKeywords.join(', ')}]...`);
-              const imgResult = await selectImagesByKeywords(imageKeywords);
+              const imgResult = await selectImagesByKeywords(imageKeywords, /* skipClear */ true);
               if (imgResult.success) {
                 updateStatus(`[${paddedNum}] ✅ ${imgResult.count} imagem(ns) incluída(s) por keyword`);
               } else {
@@ -4032,7 +4969,7 @@
               console.warn(`⚠️ Image keyword selection failed: ${imgErr.message}. Continuing with prompt send.`);
               updateStatus(`[${paddedNum}] ⚠️ Seleção de imagens por keyword falhou, continuando...`);
             }
-          } else if (characters.length === 0 && state.includeImagesEnabled) {
+          } else if (shouldSelectImages && characters.length === 0) {
             // Legacy: include ALL images (existing behavior unchanged)
             updateStatus(`[${paddedNum}] 🖼️ Selecionando imagens de referência...`);
             const imageResult = await selectAllImages();
@@ -4340,7 +5277,7 @@
   // DEBUG & DIAGNOSTICS
   // ============================================================================
   function performDiagnostics() {
-    console.log('🔍 VEO3 Batch Automator v1.3.0 — Diagnostics');
+    console.log('🔍 VEO3 Batch Automator v1.6.0 — Diagnostics');
     console.log('='.repeat(50));
 
     const inputEl = findElement(SELECTORS.inputField, 'input');
@@ -4378,7 +5315,7 @@
   // INITIALIZATION
   // ============================================================================
   function init() {
-    console.log('🎬 VEO3 Batch Automator v1.3.0');
+    console.log('🎬 VEO3 Batch Automator v1.6.0');
     console.log(`📁 Downloads → ${CONFIG.DOWNLOAD_FOLDER}/001.mp4, 002.mp4, ...`);
     injectStyles();
     createFloatingBubble();
