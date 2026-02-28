@@ -4725,8 +4725,6 @@
     const a = document.createElement('a');
     a.href = url;
     a.download = filename;
-    a.target = '_blank';
-    a.rel = 'noopener';
     a.style.display = 'none';
     document.body.appendChild(a);
     a.click();
@@ -5107,6 +5105,15 @@
       if (n > 0) console.log(`📹 pos=${pos}: +${n} (total: ${collectedUrls.size})`);
     }
 
+    // Pass 3: slow sweep down (catch stubborn lazy elements)
+    for (let pos = 0; pos <= maxH; pos += step) {
+      scrollTarget.scrollTop = pos;
+      if (!scrollContainer) window.scrollTo({ top: pos, behavior: 'instant' });
+      await sleep(1000);
+      const n = collectVisibleVideoUrls();
+      if (n > 0) console.log(`📹 Pass3 pos=${pos}: +${n} (total: ${collectedUrls.size})`);
+    }
+
     // Restore view
     if (clickedFilter) {
       const btns = document.querySelectorAll('button');
@@ -5120,7 +5127,10 @@
     else window.scrollTo({ top: savedScroll, behavior: 'instant' });
 
     const videoUrls = [...collectedUrls.keys()];
-    console.log(`📹 Found ${videoUrls.length} video URLs`);
+    // Reverse: VEO3 shows newest first at top, so scroll collects them newest-first
+    // We want 001 = oldest (first prompt), so reverse the list
+    videoUrls.reverse();
+    console.log(`📹 Found ${videoUrls.length} video URLs (reversed for prompt order)`);
 
     if (videoUrls.length === 0) {
       updateStatus('⚠️ Nenhum vídeo encontrado na página.');
