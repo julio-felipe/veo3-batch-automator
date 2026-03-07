@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Veo3 Prompt Batch Automator
 // @namespace    https://synkra.io/
-// @version      1.7.2
+// @version      1.8.0
 // @description  Automate batch video generation in Google Veo 3.1 — Send All then Download All
 // @author       j. felipe
 // @match        https://labs.google/fx/pt/tools/flow/project/*
@@ -105,7 +105,16 @@
     IMAGE_SELECT_DELAY: 500,        // Delay after selecting each image (ms)
     TAB_SWITCH_DELAY: 700,          // Delay after switching tabs (ms)
     IMAGE_HOVER_DELAY: 400,         // Delay after hovering over image card (ms)
-    MAX_IMAGE_SELECT_RETRIES: 3     // Max retries for selecting images
+    MAX_IMAGE_SELECT_RETRIES: 3,    // Max retries for selecting images
+    RATE_LIMIT_COOLDOWN: 45000,     // Wait time when VEO3 says "too fast" (45s)
+    RATE_LIMIT_MAX_RETRIES: 3,      // Max retries per prompt on rate-limit
+    DEBUG_MODE: false,              // Set to true for verbose console output
+    // Download robustness (v1.8.0)
+    DOWNLOAD_RETRY_MAX: 3,          // Max retry attempts per video download
+    DOWNLOAD_RETRY_DELAY: 3000,     // Initial retry delay (ms), doubles each retry
+    DOWNLOAD_BATCH_SIZE: 5,         // Videos to download per batch (prevents browser throttle)
+    DOWNLOAD_INTER_BATCH_DELAY: 2000, // Pause between batches (ms)
+    SCROLL_STALE_THRESHOLD: 3       // Stop scrolling after N consecutive positions with no new items
   };
 
   // ============================================================================
@@ -251,7 +260,7 @@
         padding: 12px 16px; cursor: grab; background: rgba(0,0,0,0.1);
         border-radius: 12px 12px 0 0; user-select: none;
       ">
-        <span style="font-weight: 600; font-size: 14px;">VEO3 Batch Automator <span style="font-size:10px;opacity:0.6">v1.7.0</span></span>
+        <span style="font-weight: 600; font-size: 14px;">VEO3 Batch Automator <span style="font-size:10px;opacity:0.6">v1.7.2</span></span>
         <div style="display: flex; gap: 8px;">
           <button id="veo3-minimize-btn" style="
             background: none; border: none; color: white; cursor: pointer;
@@ -419,9 +428,10 @@
     dlPageBtn.addEventListener('mouseleave', () => { if (!dlPageBtn.disabled) dlPageBtn.style.background = '#00BCD4'; });
     dlImagesBtn.addEventListener('mouseenter', () => { if (!dlImagesBtn.disabled) dlImagesBtn.style.background = '#8E24AA'; });
     dlImagesBtn.addEventListener('mouseleave', () => { if (!dlImagesBtn.disabled) dlImagesBtn.style.background = '#AB47BC'; });
-    // DIAGNOSTIC BUTTONS — light and deep page analysis
+    // DIAGNOSTIC BUTTONS — light and deep page analysis (hidden by default)
     const diagContainer = document.createElement('div');
-    diagContainer.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;margin-bottom:2px';
+    diagContainer.id = 'veo3-diag-container';
+    diagContainer.style.cssText = 'display:none;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;margin-bottom:2px';
 
     const diagLightBtn = document.createElement('button');
     diagLightBtn.id = 'veo3-diag-light-btn';
@@ -440,6 +450,23 @@
 
     const statusDisplay = document.getElementById('veo3-status-display');
     statusDisplay.parentElement.insertBefore(diagContainer, statusDisplay);
+
+    // Triple-click on panel header to toggle diagnostic buttons
+    let headerClickCount = 0;
+    let headerClickTimer = null;
+    header.addEventListener('click', (e) => {
+      if (e.target.tagName === 'BUTTON') return;
+      headerClickCount++;
+      if (headerClickTimer) clearTimeout(headerClickTimer);
+      headerClickTimer = setTimeout(() => { headerClickCount = 0; }, 500);
+      if (headerClickCount >= 3) {
+        headerClickCount = 0;
+        const dc = document.getElementById('veo3-diag-container');
+        if (dc) {
+          dc.style.display = dc.style.display === 'none' ? 'grid' : 'none';
+        }
+      }
+    });
 
     scanPageBtn.addEventListener('mouseenter', () => { scanPageBtn.style.background = '#607D8B'; });
     scanPageBtn.addEventListener('mouseleave', () => { scanPageBtn.style.background = '#78909C'; });
@@ -803,7 +830,39 @@
     await sleep(Math.round(delay));
   }
 
-  // Check if VEO3 queue is full (max 5 generations)
+  // ── Fetch with retry + exponential backoff (v1.8.0) ──
+  // Retries on: network errors, HTTP 429/500/502/503/504, timeouts
+  async function fetchWithRetry(url, options = {}, maxRetries = CONFIG.DOWNLOAD_RETRY_MAX) {
+    let lastError = null;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const response = await fetch(url, { ...options, credentials: 'same-origin' });
+        // Retry on server errors and rate limits
+        if (response.status === 429 || (response.status >= 500 && response.status < 600)) {
+          lastError = new Error(`HTTP ${response.status}`);
+          if (attempt < maxRetries) {
+            const delay = CONFIG.DOWNLOAD_RETRY_DELAY * Math.pow(2, attempt);
+            console.warn(`⚠️ [fetchWithRetry] HTTP ${response.status}, retry ${attempt + 1}/${maxRetries} in ${delay}ms...`);
+            await sleep(delay);
+            continue;
+          }
+          return response; // Return last response even if bad, let caller decide
+        }
+        return response; // Success or client error (4xx except 429)
+      } catch (err) {
+        lastError = err;
+        if (attempt < maxRetries) {
+          const delay = CONFIG.DOWNLOAD_RETRY_DELAY * Math.pow(2, attempt);
+          console.warn(`⚠️ [fetchWithRetry] Network error: ${err.message}, retry ${attempt + 1}/${maxRetries} in ${delay}ms...`);
+          await sleep(delay);
+        }
+      }
+    }
+    throw lastError || new Error('fetchWithRetry: all attempts failed');
+  }
+
+  // Check if VEO3 queue is full (max 5 generations) or rate-limited
+  // Returns: false | 'queue_full' | 'rate_limited'
   function detectQueueFull() {
     const candidates = document.querySelectorAll(
       '[role="alert"], [role="status"], [role="tooltip"], ' +
@@ -812,15 +871,63 @@
     );
     for (const el of candidates) {
       const text = el.textContent || '';
-      if (text.includes('máximo') && text.includes('geraç')) return true;
-      if (text.includes('maximum') && text.includes('generation')) return true;
+      if (text.includes('máximo') && text.includes('geraç')) return 'queue_full';
+      if (text.includes('maximum') && text.includes('generation')) return 'queue_full';
     }
     return false;
   }
 
-  // Wait for queue slot if VEO3 reports queue full
+  // Detect rate-limit errors on the page ("Falha: Você está solicitando gerações muito rápido")
+  // Scans ALL visible cards/blocks for the rate-limit error message
+  function detectRateLimitOnPage() {
+    // Strategy 1: Scan common alert/error containers
+    const alertContainers = document.querySelectorAll(
+      '[role="alert"], [role="status"], [class*="snack"], [class*="toast"], ' +
+      '[class*="error"], [class*="warning"], [class*="banner"]'
+    );
+    for (const el of alertContainers) {
+      const text = (el.textContent || '').toLowerCase();
+      if (text.includes('muito rápido') || text.includes('too fast') || text.includes('too quickly')) return true;
+      if (text.includes('solicitando') && text.includes('rápido')) return true;
+      if (text.includes('requesting') && text.includes('fast')) return true;
+    }
+
+    // Strategy 2: Scan generation result cards (the "Falha" cards in the timeline)
+    // VEO3 shows failed generations as cards with warning icons + error text
+    const allElements = document.querySelectorAll('div, span, p');
+    for (const el of allElements) {
+      if (el.closest('#veo3-panel, #veo3-bubble')) continue;
+      const text = (el.textContent || '').toLowerCase();
+      // Only check small text blocks (not entire page)
+      if (text.length > 300 || text.length < 10) continue;
+      if ((text.includes('falha') || text.includes('fail')) &&
+        (text.includes('muito rápido') || text.includes('too fast') || text.includes('too quickly'))) {
+        return true;
+      }
+      if (text.includes('solicitando') && text.includes('rápido')) return true;
+    }
+
+    return false;
+  }
+
+  // Wait for queue slot if VEO3 reports queue full or rate-limited
   async function waitForQueueSlot() {
-    if (!detectQueueFull()) return;
+    const queueStatus = detectQueueFull();
+    const rateLimited = detectRateLimitOnPage();
+
+    if (!queueStatus && !rateLimited) return;
+
+    if (rateLimited) {
+      // Rate-limited: longer cooldown with exponential backoff
+      updateStatus(`⚠️ VEO3 limitou a velocidade — aguardando ${(CONFIG.RATE_LIMIT_COOLDOWN / 1000).toFixed(0)}s...`);
+      await sleep(CONFIG.RATE_LIMIT_COOLDOWN);
+      // Increase inter-prompt delays dynamically to prevent future rate-limits
+      state._adaptiveDelayMultiplier = Math.min((state._adaptiveDelayMultiplier || 1) * 1.5, 4);
+      if (CONFIG.DEBUG_MODE) console.log(`⏱️ Adaptive delay multiplier: ${state._adaptiveDelayMultiplier.toFixed(1)}x`);
+      return;
+    }
+
+    // Queue full: normal cooldown
     updateStatus(`⏳ Fila cheia (${CONFIG.QUEUE_BATCH_SIZE}/${CONFIG.QUEUE_BATCH_SIZE}) — aguardando vaga...`);
     let waited = 0;
     const maxWait = CONFIG.QUEUE_COOLDOWN * 20; // 5 min max based on cooldown
@@ -1612,7 +1719,7 @@
     const ts = new Date().toLocaleTimeString('pt-BR');
     info.push(`=== VEO3 DIAGNOSTIC (${isDeep ? 'PROFUNDO' : 'RÁPIDO'}) — ${ts} ===`);
     info.push(`URL: ${window.location.href}`);
-    info.push(`Script: v1.7.0`);
+    info.push(`Script: v1.7.2`);
 
     updateStatus(`🔍 Executando diagnóstico ${isDeep ? 'profundo' : 'rápido'}...`);
 
@@ -3652,6 +3759,14 @@
             return;
           }
 
+          // Strategy 0: Detect rate-limit error (don't wait 8min for a failed generation)
+          // VEO3 shows "Falha: Você está solicitando gerações muito rápido" as a card
+          if (elapsed > 3000 && detectRateLimitOnPage()) {
+            clearInterval(interval);
+            reject(new Error('rate_limited'));
+            return;
+          }
+
           // Strategy 1: ARIA progress bars
           const progressBars = document.querySelectorAll('[role="progressbar"]');
           for (const bar of progressBars) {
@@ -4615,7 +4730,7 @@
     if (!url || !url.includes('getMediaUrlRedirect')) return url;
 
     try {
-      const response = await fetch(url, { credentials: 'same-origin' });
+      const response = await fetchWithRetry(url, {}, CONFIG.DOWNLOAD_RETRY_MAX);
       if (!response.ok) {
         console.warn(`⚠️ resolveMediaRedirect: HTTP ${response.status}`);
         return url;
@@ -4688,8 +4803,8 @@
         console.log(`📹 fetchVideoBlob: resolved URL: ${fetchUrl.substring(0, 100)}`);
       }
 
-      // Step 2: Fetch the actual video content
-      const response = await fetch(fetchUrl, { credentials: 'same-origin' });
+      // Step 2: Fetch the actual video content (with retry)
+      const response = await fetchWithRetry(fetchUrl, {}, CONFIG.DOWNLOAD_RETRY_MAX);
 
       if (!response.ok) {
         console.warn(`⚠️ fetchVideoBlob: HTTP ${response.status}`);
@@ -5087,31 +5202,70 @@
     await sleep(500);
     collectVisibleVideoUrls();
 
-    // Pass 1: down
+    // ── Adaptive scroll: stop when no new videos found for N consecutive steps ──
+    const staleMax = CONFIG.SCROLL_STALE_THRESHOLD;
+    const scrollWait = collectedUrls.size > 50 ? 1200 : 800; // More time for large pages
+
+    // Pass 1: down (adaptive)
+    let staleCount = 0;
     for (let pos = 0; pos <= maxH; pos += step) {
       scrollTarget.scrollTop = pos;
       if (!scrollContainer) window.scrollTo({ top: pos, behavior: 'instant' });
-      await sleep(800);
+      await sleep(scrollWait);
       const n = collectVisibleVideoUrls();
-      if (n > 0) console.log(`📹 pos=${pos}: +${n} (total: ${collectedUrls.size})`);
+      if (n > 0) {
+        staleCount = 0;
+        console.log(`📹 pos=${pos}: +${n} (total: ${collectedUrls.size})`);
+        updateStatus(`🔍 Escaneando... ${collectedUrls.size} vídeos encontrados`);
+      } else {
+        staleCount++;
+        if (staleCount >= staleMax && pos > maxH * 0.5) {
+          console.log(`📹 Pass1: stopping at pos=${pos} — ${staleMax} stale steps`);
+          break;
+        }
+      }
     }
 
-    // Pass 2: up
+    // Pass 2: up (adaptive)
+    staleCount = 0;
     for (let pos = maxH; pos >= 0; pos -= step) {
       scrollTarget.scrollTop = pos;
       if (!scrollContainer) window.scrollTo({ top: pos, behavior: 'instant' });
-      await sleep(800);
+      await sleep(scrollWait);
       const n = collectVisibleVideoUrls();
-      if (n > 0) console.log(`📹 pos=${pos}: +${n} (total: ${collectedUrls.size})`);
+      if (n > 0) {
+        staleCount = 0;
+        console.log(`📹 pos=${pos}: +${n} (total: ${collectedUrls.size})`);
+        updateStatus(`🔍 Escaneando... ${collectedUrls.size} vídeos encontrados`);
+      } else {
+        staleCount++;
+        if (staleCount >= staleMax && pos < maxH * 0.5) {
+          console.log(`📹 Pass2: stopping at pos=${pos} — ${staleMax} stale steps`);
+          break;
+        }
+      }
     }
 
-    // Pass 3: slow sweep down (catch stubborn lazy elements)
-    for (let pos = 0; pos <= maxH; pos += step) {
-      scrollTarget.scrollTop = pos;
-      if (!scrollContainer) window.scrollTo({ top: pos, behavior: 'instant' });
-      await sleep(1000);
-      const n = collectVisibleVideoUrls();
-      if (n > 0) console.log(`📹 Pass3 pos=${pos}: +${n} (total: ${collectedUrls.size})`);
+    // Pass 3: slow sweep down only if we found many items (catch stubborn lazy elements)
+    if (collectedUrls.size > 10) {
+      staleCount = 0;
+      for (let pos = 0; pos <= maxH; pos += step) {
+        scrollTarget.scrollTop = pos;
+        if (!scrollContainer) window.scrollTo({ top: pos, behavior: 'instant' });
+        await sleep(1200);
+        const n = collectVisibleVideoUrls();
+        if (n > 0) {
+          staleCount = 0;
+          console.log(`📹 Pass3 pos=${pos}: +${n} (total: ${collectedUrls.size})`);
+          updateStatus(`🔍 Varredura final... ${collectedUrls.size} vídeos encontrados`);
+        } else {
+          staleCount++;
+          if (staleCount >= staleMax) {
+            console.log(`📹 Pass3: stopping at pos=${pos} — ${staleMax} stale steps`);
+            break;
+          }
+        }
+      }
     }
 
     // Restore view
@@ -5140,65 +5294,96 @@
 
     updateStatus(`📹 ${videoUrls.length} vídeo(s) encontrados — baixando como .mp4...`);
 
-    // ── STEP 3: Download each video (resolve TRPC URL → fetch blob → save) ──
+    // ── STEP 3: Download in batches (v1.8.0) ──
+    const batchSize = CONFIG.DOWNLOAD_BATCH_SIZE;
+    const totalVideos = videoUrls.length;
+    const totalBatches = Math.ceil(totalVideos / batchSize);
     let downloaded = 0;
     let failed = 0;
+    const dlStartTime = Date.now();
 
-    for (let i = 0; i < videoUrls.length; i++) {
-      const originalUrl = videoUrls[i];
-      const num = String(i + 1).padStart(3, '0');
-      const filename = useFolder ? `${num}.mp4` : `${filePrefix}${num}.mp4`;
+    for (let batchIdx = 0; batchIdx < totalBatches; batchIdx++) {
+      const batchStart = batchIdx * batchSize;
+      const batchEnd = Math.min(batchStart + batchSize, totalVideos);
+      const batchNum = batchIdx + 1;
 
-      updateStatus(`  [${num}] ⬇️ Baixando...`);
-
-      try {
-        // Step A: Resolve TRPC redirect → get direct Google Storage URL
-        let downloadUrl = originalUrl;
-        if (originalUrl.includes('getMediaUrlRedirect')) {
-          downloadUrl = await resolveMediaRedirectUrl(originalUrl);
-          console.log(`📹 [${num}] Resolved: ${downloadUrl.substring(0, 80)}`);
-        }
-
-        // Step B: Fetch the actual video blob
-        const blob = await fetchVideoBlob(downloadUrl);
-
-        if (blob && blob.size > 0) {
-          // Step C: Save to folder or via <a download>
-          if (useFolder) {
-            await saveToFolder(dirHandle, filename, blob);
-            updateStatus(`  [${num}] ✅ ${folderName}/${filename} (${(blob.size / 1024 / 1024).toFixed(1)}MB)`);
-          } else {
-            const blobUrl = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = blobUrl;
-            a.download = filename;
-            a.style.display = 'none';
-            document.body.appendChild(a);
-            a.click();
-            setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(blobUrl); }, 2000);
-            updateStatus(`  [${num}] ✅ ${filename} (${(blob.size / 1024 / 1024).toFixed(1)}MB)`);
-          }
-          downloaded++;
-        } else {
-          // Fallback: <a download> with resolved URL (browser handles the rest)
-          console.warn(`📹 [${num}] Fetch failed, trying <a download>...`);
-          downloadViaAnchor(downloadUrl, filename);
-          updateStatus(`  [${num}] ⚠️ Download tentado via link: ${filename}`);
-          downloaded++; // Optimistic
-        }
-      } catch (err) {
-        console.error(`📹 [${num}] Error:`, err);
-        updateStatus(`  [${num}] ❌ Erro: ${err.message}`);
-        failed++;
+      if (totalBatches > 1) {
+        updateStatus(`📦 [lote ${batchNum}/${totalBatches}] Baixando ${batchStart + 1}-${batchEnd} de ${totalVideos}...`);
       }
 
-      // Small delay between downloads
-      if (i < videoUrls.length - 1) await sleep(1500);
+      for (let i = batchStart; i < batchEnd; i++) {
+        const originalUrl = videoUrls[i];
+        const num = String(i + 1).padStart(3, '0');
+        const filename = useFolder ? `${num}.mp4` : `${filePrefix}${num}.mp4`;
+        const pct = ((i + 1) / totalVideos * 100).toFixed(0);
+
+        // ETA calculation
+        const elapsed = Date.now() - dlStartTime;
+        const avgPerVideo = (downloaded + failed) > 0 ? elapsed / (downloaded + failed) : 0;
+        const remaining = totalVideos - (i + 1);
+        const etaSec = avgPerVideo > 0 ? Math.round((remaining * avgPerVideo) / 1000) : '?';
+        const etaStr = typeof etaSec === 'number' ? `~${etaSec}s` : etaSec;
+
+        updateStatus(`  [${num}/${String(totalVideos).padStart(3, '0')}] ⬇️ ${pct}% (ETA: ${etaStr})`);
+
+        try {
+          // Step A: Resolve TRPC redirect → get direct Google Storage URL
+          let downloadUrl = originalUrl;
+          if (originalUrl.includes('getMediaUrlRedirect')) {
+            downloadUrl = await resolveMediaRedirectUrl(originalUrl);
+            console.log(`📹 [${num}] Resolved: ${downloadUrl.substring(0, 80)}`);
+          }
+
+          // Step B: Fetch the actual video blob
+          const blob = await fetchVideoBlob(downloadUrl);
+
+          if (blob && blob.size > 0) {
+            // Step C: Save to folder or via <a download>
+            if (useFolder) {
+              await saveToFolder(dirHandle, filename, blob);
+              updateStatus(`  [${num}] ✅ ${folderName}/${filename} (${(blob.size / 1024 / 1024).toFixed(1)}MB)`);
+            } else {
+              const blobUrl = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = blobUrl;
+              a.download = filename;
+              a.style.display = 'none';
+              document.body.appendChild(a);
+              a.click();
+              setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(blobUrl); }, 2000);
+              updateStatus(`  [${num}] ✅ ${filename} (${(blob.size / 1024 / 1024).toFixed(1)}MB)`);
+            }
+            downloaded++;
+          } else {
+            // Fallback: <a download> with resolved URL (browser handles the rest)
+            console.warn(`📹 [${num}] Fetch failed, trying <a download>...`);
+            downloadViaAnchor(downloadUrl, filename);
+            updateStatus(`  [${num}] ⚠️ Download tentado via link: ${filename}`);
+            downloaded++; // Optimistic
+          }
+        } catch (err) {
+          console.error(`📹 [${num}] Error:`, err);
+          updateStatus(`  [${num}] ❌ Erro: ${err.message}`);
+          failed++;
+        }
+
+        // Small delay between downloads within a batch
+        if (i < batchEnd - 1) await sleep(1500);
+      }
+
+      // Inter-batch pause (prevents browser throttling)
+      if (batchIdx < totalBatches - 1) {
+        if (totalBatches > 1) {
+          updateStatus(`⏳ Pausa entre lotes (${(CONFIG.DOWNLOAD_INTER_BATCH_DELAY / 1000).toFixed(0)}s)...`);
+        }
+        await sleep(CONFIG.DOWNLOAD_INTER_BATCH_DELAY);
+      }
     }
 
     // ── STEP 4: Report results ──
+    const totalTime = ((Date.now() - dlStartTime) / 1000).toFixed(1);
     updateStatus('────────────────────');
-    updateStatus(`📥 Resultado: ${downloaded} baixados | ${failed} falharam`);
+    updateStatus(`📥 Resultado: ${downloaded} baixados | ${failed} falharam | ${totalTime}s`);
     if (downloaded > 0) {
       if (useFolder) {
         updateStatus(`📂 Arquivos em: ${folderName}/001.mp4, etc`);
@@ -5507,6 +5692,7 @@
     state.lastDownloadComplete = false;
     state.startTime = Date.now();
     state.phase = 'sending';
+    state._adaptiveDelayMultiplier = 1; // Reset adaptive delay
     updateBubbleBadge();
 
     document.getElementById('veo3-start-btn').disabled = true;
@@ -5531,129 +5717,169 @@
         const paddedNum = String(i + 1).padStart(3, '0');
 
         document.getElementById('veo3-current').textContent = `Enviando: ${i + 1}/${prompts.length}`;
-        updateStatus(`[${paddedNum}] Preparando...`);
 
-        try {
-          // Smart queue: count active generations (progress bars / spinners)
-          await waitForQueueSlot();
-          const activeGens = countActiveGenerations();
-          if (activeGens >= CONFIG.QUEUE_BATCH_SIZE) {
-            updateStatus(`⏳ ${activeGens} gerações ativas — aguardando conclusão...`);
-            await waitForActiveGenerations(CONFIG.QUEUE_BATCH_SIZE - 1);
-            updateStatus(`✅ Vaga liberada, continuando...`);
-            await sleep(1500);
-          }
+        // ── Rate-limit retry loop ──
+        let retryCount = 0;
+        let promptSuccess = false;
 
-          // Parse [CHARS: Name1, Name2] and [IMGS: keyword1, 2] directives from prompt
-          const { cleanPrompt, characters, imageKeywords } = parseCharsFromPrompt(prompt);
+        while (retryCount <= CONFIG.RATE_LIMIT_MAX_RETRIES && !promptSuccess && state.isRunning) {
+          const retryLabel = retryCount > 0 ? ` (tentativa ${retryCount + 1}/${CONFIG.RATE_LIMIT_MAX_RETRIES + 1})` : '';
+          updateStatus(`[${paddedNum}] Preparando...${retryLabel}`);
 
-          // Image/character selection ONLY runs when the toggle is enabled.
-          // When disabled, directives are silently stripped and the clean prompt is sent normally.
-          const shouldSelectImages = state.includeImagesEnabled;
+          try {
+            // Smart queue: count active generations (progress bars / spinners)
+            await waitForQueueSlot();
+            const activeGens = countActiveGenerations();
+            if (activeGens >= CONFIG.QUEUE_BATCH_SIZE) {
+              updateStatus(`⏳ ${activeGens} gerações ativas — aguardando conclusão...`);
+              await waitForActiveGenerations(CONFIG.QUEUE_BATCH_SIZE - 1);
+              updateStatus(`✅ Vaga liberada, continuando...`);
+              await sleep(1500);
+            }
 
-          // Unified clear: clear attached images ONCE before any selection (CHARS or IMGS)
-          if (shouldSelectImages && (characters.length > 0 || imageKeywords.length > 0)) {
-            await clearAttachedImages();
-          }
+            // Parse [CHARS: Name1, Name2] and [IMGS: keyword1, 2] directives from prompt
+            const { cleanPrompt, characters, imageKeywords } = parseCharsFromPrompt(prompt);
 
-          if (shouldSelectImages && characters.length > 0) {
-            // Selective: only include named character images (auto-detected by @Name:)
-            try {
-              updateStatus(`[${paddedNum}] 🎭 Selecionando personagens: ${characters.join(', ')}...`);
-              const charResult = await selectCharacterImages(characters);
-              if (charResult.success) {
-                updateStatus(`[${paddedNum}] ✅ ${charResult.count} personagem(ns) incluído(s)`);
+            // Image/character selection ONLY runs when the toggle is enabled.
+            // When disabled, directives are silently stripped and the clean prompt is sent normally.
+            const shouldSelectImages = state.includeImagesEnabled;
+
+            // Unified clear: clear attached images ONCE before any selection (CHARS or IMGS)
+            if (shouldSelectImages && (characters.length > 0 || imageKeywords.length > 0)) {
+              await clearAttachedImages();
+            }
+
+            if (shouldSelectImages && characters.length > 0) {
+              // Selective: only include named character images (auto-detected by @Name:)
+              try {
+                updateStatus(`[${paddedNum}] 🎭 Selecionando personagens: ${characters.join(', ')}...`);
+                const charResult = await selectCharacterImages(characters);
+                if (charResult.success) {
+                  updateStatus(`[${paddedNum}] ✅ ${charResult.count} personagem(ns) incluído(s)`);
+                } else {
+                  updateStatus(`[${paddedNum}] ⚠️ ${charResult.error || 'Seleção parcial'}`);
+                }
+                await microDelay();
+              } catch (charErr) {
+                // Character selection is best-effort — never block prompt send
+                console.warn(`⚠️ Character selection failed: ${charErr.message}. Continuing with prompt send.`);
+                updateStatus(`[${paddedNum}] ⚠️ Seleção de personagens falhou, continuando...`);
+              }
+            }
+
+            if (shouldSelectImages && imageKeywords.length > 0) {
+              // [IMGS: ...] — select images by keyword/index via resource panel
+              // skipClear=true because we already cleared above (preserves CHARS selections)
+              try {
+                updateStatus(`[${paddedNum}] 🖼️ Selecionando imagens [IMGS: ${imageKeywords.join(', ')}]...`);
+                const imgResult = await selectImagesByKeywords(imageKeywords, /* skipClear */ true);
+                if (imgResult.success) {
+                  updateStatus(`[${paddedNum}] ✅ ${imgResult.count} imagem(ns) incluída(s) por keyword`);
+                } else {
+                  updateStatus(`[${paddedNum}] ⚠️ ${imgResult.error || 'Seleção de imagens parcial'}`);
+                }
+                await microDelay();
+              } catch (imgErr) {
+                // Image keyword selection is best-effort — never block prompt send
+                console.warn(`⚠️ Image keyword selection failed: ${imgErr.message}. Continuing with prompt send.`);
+                updateStatus(`[${paddedNum}] ⚠️ Seleção de imagens por keyword falhou, continuando...`);
+              }
+            } else if (shouldSelectImages && characters.length === 0) {
+              // Legacy: include ALL images (existing behavior unchanged)
+              updateStatus(`[${paddedNum}] 🖼️ Selecionando imagens de referência...`);
+              const imageResult = await selectAllImages();
+              if (!imageResult.success) {
+                updateStatus(`[${paddedNum}] ⚠️ Imagens não selecionadas: ${imageResult.error || 'desconhecido'}`);
               } else {
-                updateStatus(`[${paddedNum}] ⚠️ ${charResult.error || 'Seleção parcial'}`);
+                updateStatus(`[${paddedNum}] ✅ ${imageResult.count} imagem(ns) incluída(s)`);
               }
               await microDelay();
-            } catch (charErr) {
-              // Character selection is best-effort — never block prompt send
-              console.warn(`⚠️ Character selection failed: ${charErr.message}. Continuing with prompt send.`);
-              updateStatus(`[${paddedNum}] ⚠️ Seleção de personagens falhou, continuando...`);
             }
-          }
 
-          if (shouldSelectImages && imageKeywords.length > 0) {
-            // [IMGS: ...] — select images by keyword/index via resource panel
-            // skipClear=true because we already cleared above (preserves CHARS selections)
-            try {
-              updateStatus(`[${paddedNum}] 🖼️ Selecionando imagens [IMGS: ${imageKeywords.join(', ')}]...`);
-              const imgResult = await selectImagesByKeywords(imageKeywords, /* skipClear */ true);
-              if (imgResult.success) {
-                updateStatus(`[${paddedNum}] ✅ ${imgResult.count} imagem(ns) incluída(s) por keyword`);
-              } else {
-                updateStatus(`[${paddedNum}] ⚠️ ${imgResult.error || 'Seleção de imagens parcial'}`);
+            await injectPrompt(cleanPrompt);
+            await microDelay(); // Natural pause after typing
+
+            await clickSendButton();
+            await microDelay(); // Natural pause after clicking send
+
+            updateStatus(`[${paddedNum}] Aguardando geração...`);
+            await waitForProgressCompletion();
+
+            // Track the generated video for Phase 2 download
+            const videoEl = state.lastVideoElement;
+            let videoUrl = videoEl ? (videoEl.src || videoEl.currentSrc || '') : '';
+            if (videoEl) {
+              videoEl.setAttribute('data-veo3-batch-index', String(i + 1));
+            }
+            // Pre-fetch blob URLs to preserve video data before React re-renders
+            if (videoUrl && videoUrl.startsWith('blob:')) {
+              try {
+                const response = await fetch(videoUrl);
+                const blob = await response.blob();
+                videoUrl = URL.createObjectURL(blob);
+                console.log(`📎 Blob preservado: vídeo ${i + 1} (${(blob.size / 1024 / 1024).toFixed(1)}MB)`);
+              } catch (e) {
+                console.warn(`⚠️ Blob não preservado vídeo ${i + 1}: ${e.message}`);
               }
-              await microDelay();
-            } catch (imgErr) {
-              // Image keyword selection is best-effort — never block prompt send
-              console.warn(`⚠️ Image keyword selection failed: ${imgErr.message}. Continuing with prompt send.`);
-              updateStatus(`[${paddedNum}] ⚠️ Seleção de imagens por keyword falhou, continuando...`);
             }
-          } else if (shouldSelectImages && characters.length === 0) {
-            // Legacy: include ALL images (existing behavior unchanged)
-            updateStatus(`[${paddedNum}] 🖼️ Selecionando imagens de referência...`);
-            const imageResult = await selectAllImages();
-            if (!imageResult.success) {
-              updateStatus(`[${paddedNum}] ⚠️ Imagens não selecionadas: ${imageResult.error || 'desconhecido'}`);
-            } else {
-              updateStatus(`[${paddedNum}] ✅ ${imageResult.count} imagem(ns) incluída(s)`);
+            state.completedVideos.push({
+              index: i + 1,
+              prompt: prompt.substring(0, 60),
+              videoElement: videoEl,
+              videoUrl: videoUrl
+            });
+            if (videoUrl) {
+              console.log(`📎 URL capturada para vídeo ${i + 1}: ${videoUrl.substring(0, 80)}`);
             }
-            await microDelay();
-          }
+            state.results.push({ index: i + 1, prompt: prompt.substring(0, 60), status: 'generated' });
 
-          await injectPrompt(cleanPrompt);
-          await microDelay(); // Natural pause after typing
+            document.getElementById('veo3-downloaded').textContent =
+              `Gerados: ${state.completedVideos.length}/${prompts.length} | Baixados: 0`;
 
-          await clickSendButton();
-          await microDelay(); // Natural pause after clicking send
+            updateStatus(`[${paddedNum}] ✅ Vídeo gerado!`);
+            promptSuccess = true; // Exit retry loop
 
-          updateStatus(`[${paddedNum}] Aguardando geração...`);
-          await waitForProgressCompletion();
+          } catch (error) {
+            // ── RATE-LIMIT RETRY LOGIC ──
+            if (error.message === 'rate_limited' && retryCount < CONFIG.RATE_LIMIT_MAX_RETRIES) {
+              retryCount++;
+              // Exponential backoff: 45s, 67s, 101s...
+              const cooldown = CONFIG.RATE_LIMIT_COOLDOWN * Math.pow(1.5, retryCount - 1);
+              const cooldownSec = Math.round(cooldown / 1000);
+              updateStatus(`[${paddedNum}] ⚠️ VEO3: "muito rápido" — aguardando ${cooldownSec}s antes de tentar novamente (${retryCount}/${CONFIG.RATE_LIMIT_MAX_RETRIES})...`);
 
-          // Track the generated video for Phase 2 download
-          const videoEl = state.lastVideoElement;
-          let videoUrl = videoEl ? (videoEl.src || videoEl.currentSrc || '') : '';
-          if (videoEl) {
-            videoEl.setAttribute('data-veo3-batch-index', String(i + 1));
-          }
-          // Pre-fetch blob URLs to preserve video data before React re-renders
-          if (videoUrl && videoUrl.startsWith('blob:')) {
-            try {
-              const response = await fetch(videoUrl);
-              const blob = await response.blob();
-              videoUrl = URL.createObjectURL(blob);
-              console.log(`📎 Blob preservado: vídeo ${i + 1} (${(blob.size / 1024 / 1024).toFixed(1)}MB)`);
-            } catch (e) {
-              console.warn(`⚠️ Blob não preservado vídeo ${i + 1}: ${e.message}`);
+              // Increase adaptive delay for ALL future prompts
+              state._adaptiveDelayMultiplier = Math.min((state._adaptiveDelayMultiplier || 1) * 1.5, 4);
+              console.log(`⏱️ Adaptive delay multiplier increased to ${state._adaptiveDelayMultiplier.toFixed(1)}x`);
+
+              await sleep(cooldown);
+              continue; // Retry same prompt
             }
+
+            // Non-retryable error, or retries exhausted
+            state.lastError = error.message;
+            const errorMsg = error.message === 'rate_limited'
+              ? `Rate-limit: ${CONFIG.RATE_LIMIT_MAX_RETRIES + 1} tentativas falharam`
+              : error.message;
+            state.results.push({ index: i + 1, prompt: prompt.substring(0, 60), status: 'error', error: errorMsg });
+            updateStatus(`[${paddedNum}] ❌ ${errorMsg}`);
+            console.error(`Prompt ${i + 1}:`, error);
+            await sleep(2000);
+            promptSuccess = true; // Exit retry loop (move to next prompt)
           }
-          state.completedVideos.push({
-            index: i + 1,
-            prompt: prompt.substring(0, 60),
-            videoElement: videoEl,
-            videoUrl: videoUrl
-          });
-          if (videoUrl) {
-            console.log(`📎 URL capturada para vídeo ${i + 1}: ${videoUrl.substring(0, 80)}`);
-          }
-          state.results.push({ index: i + 1, prompt: prompt.substring(0, 60), status: 'generated' });
+        } // end retry while
 
-          document.getElementById('veo3-downloaded').textContent =
-            `Gerados: ${state.completedVideos.length}/${prompts.length} | Baixados: 0`;
-
-          updateStatus(`[${paddedNum}] ✅ Vídeo gerado!`);
-
-          if (i < prompts.length - 1) {
+        if (promptSuccess && i < prompts.length - 1 && state.isRunning) {
+          // Apply adaptive delay multiplier if rate-limiting was detected
+          const multiplier = state._adaptiveDelayMultiplier || 1;
+          if (multiplier > 1) {
+            const baseDelay = (CONFIG.INTER_PROMPT_DELAY_MIN + CONFIG.INTER_PROMPT_DELAY_MAX) / 2;
+            const adaptedDelay = Math.round(baseDelay * multiplier);
+            updateStatus(`⏳ Delay adaptativo: ${(adaptedDelay / 1000).toFixed(1)}s (${multiplier.toFixed(1)}x)...`);
+            await sleep(adaptedDelay);
+          } else {
             await humanDelay();
           }
-        } catch (error) {
-          state.lastError = error.message;
-          state.results.push({ index: i + 1, prompt: prompt.substring(0, 60), status: 'error', error: error.message });
-          updateStatus(`[${paddedNum}] ❌ ${error.message}`);
-          console.error(`Prompt ${i + 1}:`, error);
-          await sleep(2000);
         }
       }
 
@@ -5834,66 +6060,100 @@
         return;
       }
 
-      // ── STEP 3: Download each video (resolve → fetch → save) ──
-      for (let i = 0; i < downloadList.length; i++) {
+      // ── STEP 3: Download in batches (v1.8.0) ──
+      const batchSize = CONFIG.DOWNLOAD_BATCH_SIZE;
+      const totalDl = downloadList.length;
+      const totalBatches = Math.ceil(totalDl / batchSize);
+
+      for (let batchIdx = 0; batchIdx < totalBatches; batchIdx++) {
         if (!state.isRunning) break;
-        while (state.isPaused && state.isRunning) { await sleep(100); }
-        if (!state.isRunning) break;
 
-        const entry = downloadList[i];
-        const paddedNum = String(entry.index).padStart(3, '0');
-        const filename = useFolder ? `${paddedNum}.mp4` : `${filePrefix}${paddedNum}.mp4`;
+        const batchStart = batchIdx * batchSize;
+        const batchEnd = Math.min(batchStart + batchSize, totalDl);
+        const batchNum = batchIdx + 1;
 
-        document.getElementById('veo3-current').textContent = `Baixando: ${i + 1}/${downloadList.length}`;
-        updateStatus(`[${paddedNum}] ⬇️ Baixando...`);
-
-        try {
-          // Resolve TRPC URL → direct Google Storage URL
-          let downloadUrl = entry.url;
-          if (downloadUrl.includes('getMediaUrlRedirect')) {
-            downloadUrl = await resolveMediaRedirectUrl(downloadUrl);
-            console.log(`📥 [${paddedNum}] Resolved: ${downloadUrl.substring(0, 80)}`);
-          }
-
-          // Fetch video blob
-          const blob = await fetchVideoBlob(downloadUrl);
-
-          if (blob && blob.size > 0) {
-            if (useFolder) {
-              await saveToFolder(dirHandle, filename, blob);
-            } else {
-              const blobUrl = URL.createObjectURL(blob);
-              const a = document.createElement('a');
-              a.href = blobUrl;
-              a.download = filename;
-              a.style.display = 'none';
-              document.body.appendChild(a);
-              a.click();
-              setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(blobUrl); }, 2000);
-            }
-            state.downloadedCount++;
-            const result = state.results.find(r => r.index === entry.index);
-            if (result) { result.status = 'ok'; result.filename = filename; }
-            updateStatus(`[${paddedNum}] ✅ ${useFolder ? folderName + '/' : ''}${filename} (${(blob.size / 1024 / 1024).toFixed(1)}MB)`);
-          } else {
-            // Fallback: <a download>
-            downloadViaAnchor(downloadUrl, filename);
-            state.downloadedCount++;
-            const result = state.results.find(r => r.index === entry.index);
-            if (result) result.status = 'download_unconfirmed';
-            updateStatus(`[${paddedNum}] ⚠️ Download tentado via link: ${filename}`);
-          }
-        } catch (error) {
-          const result = state.results.find(r => r.index === entry.index);
-          if (result) { result.status = 'download_error'; result.error = error.message; }
-          updateStatus(`[${paddedNum}] ❌ Download falhou: ${error.message}`);
-          console.error(`Download ${entry.index}:`, error);
+        if (totalBatches > 1) {
+          updateStatus(`📦 [lote ${batchNum}/${totalBatches}] Baixando ${batchStart + 1}-${batchEnd} de ${totalDl}...`);
         }
 
-        document.getElementById('veo3-downloaded').textContent =
-          `Gerados: ${total} | Baixados: ${state.downloadedCount}/${downloadList.length}`;
+        for (let i = batchStart; i < batchEnd; i++) {
+          if (!state.isRunning) break;
+          while (state.isPaused && state.isRunning) { await sleep(100); }
+          if (!state.isRunning) break;
 
-        if (i < downloadList.length - 1) await sleep(1500);
+          const entry = downloadList[i];
+          const paddedNum = String(entry.index).padStart(3, '0');
+          const filename = useFolder ? `${paddedNum}.mp4` : `${filePrefix}${paddedNum}.mp4`;
+          const pct = ((i + 1) / totalDl * 100).toFixed(0);
+
+          // ETA calculation
+          const elapsed = Date.now() - downloadStartTime;
+          const processed = state.downloadedCount + (state.results.filter(r => r.status === 'download_error').length);
+          const avgPerVideo = processed > 0 ? elapsed / processed : 0;
+          const remainingCount = totalDl - (i + 1);
+          const etaSec = avgPerVideo > 0 ? Math.round((remainingCount * avgPerVideo) / 1000) : '?';
+          const etaStr = typeof etaSec === 'number' ? `~${etaSec}s` : etaSec;
+
+          document.getElementById('veo3-current').textContent = `Baixando: ${i + 1}/${totalDl} (${pct}% | ETA: ${etaStr})`;
+          updateStatus(`[${paddedNum}] ⬇️ ${pct}% (ETA: ${etaStr})`);
+
+          try {
+            // Resolve TRPC URL → direct Google Storage URL
+            let downloadUrl = entry.url;
+            if (downloadUrl.includes('getMediaUrlRedirect')) {
+              downloadUrl = await resolveMediaRedirectUrl(downloadUrl);
+              console.log(`📥 [${paddedNum}] Resolved: ${downloadUrl.substring(0, 80)}`);
+            }
+
+            // Fetch video blob
+            const blob = await fetchVideoBlob(downloadUrl);
+
+            if (blob && blob.size > 0) {
+              if (useFolder) {
+                await saveToFolder(dirHandle, filename, blob);
+              } else {
+                const blobUrl = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = blobUrl;
+                a.download = filename;
+                a.style.display = 'none';
+                document.body.appendChild(a);
+                a.click();
+                setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(blobUrl); }, 2000);
+              }
+              state.downloadedCount++;
+              const result = state.results.find(r => r.index === entry.index);
+              if (result) { result.status = 'ok'; result.filename = filename; }
+              updateStatus(`[${paddedNum}] ✅ ${useFolder ? folderName + '/' : ''}${filename} (${(blob.size / 1024 / 1024).toFixed(1)}MB)`);
+            } else {
+              // Fallback: <a download>
+              downloadViaAnchor(downloadUrl, filename);
+              state.downloadedCount++;
+              const result = state.results.find(r => r.index === entry.index);
+              if (result) result.status = 'download_unconfirmed';
+              updateStatus(`[${paddedNum}] ⚠️ Download tentado via link: ${filename}`);
+            }
+          } catch (error) {
+            const result = state.results.find(r => r.index === entry.index);
+            if (result) { result.status = 'download_error'; result.error = error.message; }
+            updateStatus(`[${paddedNum}] ❌ Download falhou: ${error.message}`);
+            console.error(`Download ${entry.index}:`, error);
+          }
+
+          document.getElementById('veo3-downloaded').textContent =
+            `Gerados: ${total} | Baixados: ${state.downloadedCount}/${totalDl}`;
+
+          // Small delay between downloads within a batch
+          if (i < batchEnd - 1) await sleep(1500);
+        }
+
+        // Inter-batch pause (prevents browser throttling)
+        if (batchIdx < totalBatches - 1 && state.isRunning) {
+          if (totalBatches > 1) {
+            updateStatus(`⏳ Pausa entre lotes (${(CONFIG.DOWNLOAD_INTER_BATCH_DELAY / 1000).toFixed(0)}s)...`);
+          }
+          await sleep(CONFIG.DOWNLOAD_INTER_BATCH_DELAY);
+        }
       }
 
       // Phase 2 summary
@@ -5955,7 +6215,7 @@
   // DEBUG & DIAGNOSTICS
   // ============================================================================
   function performDiagnostics() {
-    console.log('🔍 VEO3 Batch Automator v1.7.0 — Diagnostics');
+    console.log('🔍 VEO3 Batch Automator v1.7.2 — Diagnostics');
     console.log('='.repeat(50));
 
     const inputEl = findElement(SELECTORS.inputField, 'input');
@@ -5993,7 +6253,7 @@
   // INITIALIZATION
   // ============================================================================
   function init() {
-    console.log('🎬 VEO3 Batch Automator v1.7.0');
+    console.log('🎬 VEO3 Batch Automator v1.7.2');
     console.log(`📁 Downloads → ${CONFIG.DOWNLOAD_FOLDER}/001.mp4, 002.mp4, ...`);
     injectStyles();
     createFloatingBubble();
