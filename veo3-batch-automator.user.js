@@ -35,7 +35,8 @@
     // Character Consistency
     includeImagesEnabled: false,
     detectedImageCount: 0,
-    imageSelectionInProgress: false
+    imageSelectionInProgress: false,
+    cachedCharacterCards: null  // Map<name, HTMLElement> — cached across prompts in same batch
   };
 
   // ============================================================================
@@ -114,7 +115,8 @@
     DOWNLOAD_RETRY_DELAY: 3000,     // Initial retry delay (ms), doubles each retry
     DOWNLOAD_BATCH_SIZE: 5,         // Videos to download per batch (prevents browser throttle)
     DOWNLOAD_INTER_BATCH_DELAY: 2000, // Pause between batches (ms)
-    SCROLL_STALE_THRESHOLD: 3       // Stop scrolling after N consecutive positions with no new items
+    SCROLL_STALE_THRESHOLD: 3,      // Stop scrolling after N consecutive positions with no new items
+    CHAR_SCROLL_STEPS: 6             // Number of progressive scroll steps when searching for character cards
   };
 
   // ============================================================================
@@ -691,16 +693,25 @@
       return startEl.closest('[class*="card"], [class*="item"], [class*="asset"]') || startEl;
     }
 
-    // Helper: register a name→card mapping, preferring cards WITH images
+    // Helper: register a name→card mapping, preferring cards WITH images (not videos)
     function registerCard(name, card, source) {
       const existing = nameToCard.get(name);
       const existingHasImg = existing ? !!existing.querySelector('img') : false;
       const newHasImg = !!card.querySelector('img');
+      const newHasVideo = !!card.querySelector('video');
 
-      if (!existing || (!existingHasImg && newHasImg)) {
+      // Skip video cards if we already have an image-only card for this name
+      if (existingHasImg && newHasVideo && !newHasImg) return;
+
+      // Upgrade: prefer cards with static images over cards without or with video
+      const existingHasVideo = existing ? !!existing.querySelector('video') : false;
+      const shouldUpgrade = !existing
+        || (!existingHasImg && newHasImg)
+        || (existingHasVideo && !newHasVideo && newHasImg);
+      if (shouldUpgrade) {
         nameToCard.set(name, card);
         const cRect = card.getBoundingClientRect();
-        console.log(`🎭 ${existing ? 'Upgraded' : 'Found'} character card (${source}): @${name} → ${card.tagName}.${(card.className || '').toString().substring(0, 40)} ${Math.round(cRect.width)}x${Math.round(cRect.height)} img=${newHasImg}`);
+        console.log(`🎭 ${existing ? 'Upgraded' : 'Found'} character card (${source}): @${name} → ${card.tagName}.${(card.className || '').toString().substring(0, 40)} ${Math.round(cRect.width)}x${Math.round(cRect.height)} img=${newHasImg} video=${newHasVideo}`);
       }
     }
 
@@ -2549,18 +2560,30 @@
   //   1. Hover card → find ⋮ → __reactProps$.onClick → "Incluir no comando"
   //   2. Hover → find "Incluir no comando" overlay button directly
   async function includeCardViaContextMenu(card, label) {
-    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    await sleep(400);
+    let cardRect = card.getBoundingClientRect();
 
-    const cardRect = card.getBoundingClientRect();
+    // Scroll the card into view ONLY if it's off-screen.
+    // Cards at negative Y can't be hovered (mouse events don't fire off-screen).
+    // Use block:'nearest' + behavior:'instant' to scroll the minimum amount.
+    const offScreen = cardRect.top < 0 || cardRect.bottom > window.innerHeight;
+    if (offScreen && cardRect.width > 0 && cardRect.height > 0) {
+      card.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+      await sleep(300);
+      cardRect = card.getBoundingClientRect(); // refresh after scroll
+    }
+
     console.log(`🎭 ${label}: card <${card.tagName}> at (${Math.round(cardRect.left)},${Math.round(cardRect.top)}) ${Math.round(cardRect.width)}x${Math.round(cardRect.height)}`);
 
-    // Check if this generation FAILED — failed cards don't have ⋮ overlay
+    // Check if this generation FAILED — failed cards don't have ⋮ overlay.
+    // IMPORTANT: Only check cards that are actually on screen (not scrolled past).
+    // Cards at negative Y are reference images scrolled into view — they are NOT
+    // the failed generation (which is always at the TOP of the timeline).
     const cardText = (card.textContent || '').toLowerCase();
-    if (cardText.includes('falha') || cardText.includes('failed') || cardText.includes('error')) {
+    const isOnScreen = cardRect.top >= 0 && cardRect.top < window.innerHeight;
+    if (isOnScreen && (cardText.includes('falha') || cardText.includes('failed') || cardText.includes('error'))) {
       const hasWarning = card.querySelector('i.google-symbols')?.textContent?.trim() === 'warning';
       if (hasWarning) {
-        console.warn(`🎭 ${label}: generation FAILED (has warning icon), skipping inclusion`);
+        console.warn(`\uD83C\uDFAD ${label}: generation FAILED (has warning icon), skipping inclusion`);
         return false;
       }
     }
@@ -2697,7 +2720,47 @@
     }
 
     if (!moreBtn) {
-      console.warn(`🎭 ${label}: ⋮ button not found, all inclusion methods failed`);
+      // VEO3 Flow no longer shows ⋮ on cards.
+      // Try the "add" button in the right panel (x > 1600, icon="add").
+      console.log(`🎭 ${label}: ⋮ not found — trying right-panel "add" button...`);
+
+      const rpBtns = document.querySelectorAll('button, [role="button"]');
+      let addBtn = null;
+      let addBtnDist = Infinity;
+
+      for (const btn of rpBtns) {
+        if (btn.closest('#veo3-panel, #veo3-bubble')) continue;
+        const icon = btn.querySelector('i.google-symbols, .google-symbols, i.material-icons');
+        const iconText = icon ? (icon.textContent || '').trim() : '';
+        if (iconText !== 'add') continue;
+        const btnText = (btn.textContent || '').toLowerCase();
+        if (btnText.includes('adicionar') || btnText.includes('mídia')) continue;
+        const bRect = btn.getBoundingClientRect();
+        if (bRect.width === 0 || bRect.height === 0) continue;
+        if (bRect.left > 1600) {
+          const dist = Math.abs(bRect.top - cardRect.top);
+          if (dist < addBtnDist) {
+            addBtnDist = dist;
+            addBtn = btn;
+          }
+        }
+      }
+
+      if (addBtn) {
+        const abr = addBtn.getBoundingClientRect();
+        console.log(`🎭 ${label}: found "add" at (${Math.round(abr.left)},${Math.round(abr.top)}), clicking...`);
+        addBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        await sleep(300);
+        addBtn.click();
+        await sleep(400);
+        triggerReactClick(addBtn);
+        await sleep(400);
+        console.log(`🎭 ✅ ${label}: included via "add" button`);
+        hoverEl.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }));
+        return true;
+      }
+
+      console.warn(`🎭 ${label}: ⋮ and "add" button both not found`);
       hoverEl.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }));
       return false;
     }
@@ -3055,18 +3118,26 @@
     state.imageSelectionInProgress = true;
 
     try {
-      console.log(`🎭 Selecting characters via ⋮ → Incluir: ${characterNames.join(', ')}`);
+      console.log(`🎭 Selecting characters: ${characterNames.join(', ')}`);
 
       // ═══════════════════════════════════════════════════════════════════════
-      // PROGRESSIVE SCROLL to bottom — ensures lazy-loaded content appears.
-      // In VEO3 Flow, the timeline shows newest at top, original character
-      // reference images at bottom. We scroll in steps to trigger loading.
+      // DIRECT REFERENCE IMAGE APPROACH:
+      //
+      // 1. Scroll to bottom (loads lazy reference images)
+      // 2. For each [CHARS:] character:
+      //    a. Find its reference image LABEL (e.g. "imageElderly wizard holding staff")
+      //    b. Find the actual <A> image element near that label (x<200, large)
+      //    c. Scroll the image to the CENTER of the viewport
+      //    d. Call includeCardViaContextMenu (hover → ⋮ → "Incluir no comando")
+      //
+      // WHY: findCharacterCards() was returning RIGHT-PANEL text cards (all at
+      // same position x=1861) instead of LEFT-PANEL reference images (x=84).
+      // This approach goes DIRECTLY to the reference images via their labels.
       // ═══════════════════════════════════════════════════════════════════════
 
       // Find the scrollable container
       let scroller = null;
-      const candidates = document.querySelectorAll('div');
-      for (const div of candidates) {
+      for (const div of document.querySelectorAll('div')) {
         if (div.closest('#veo3-panel, #veo3-bubble')) continue;
         const cs = getComputedStyle(div);
         if ((cs.overflowY === 'auto' || cs.overflowY === 'scroll') &&
@@ -3076,94 +3147,131 @@
           break;
         }
       }
-
       const scrollTarget = scroller || document.scrollingElement || document.documentElement;
-      const maxScroll = scrollTarget.scrollHeight - scrollTarget.clientHeight;
-      console.log(`🎭 Scroll target: <${scrollTarget.tagName || 'HTML'}> scrollHeight=${scrollTarget.scrollHeight} maxScroll=${maxScroll}`);
 
-      // Progressive scroll: go in 3 steps to trigger lazy loading
+      // Step 1: Progressive scroll to bottom — loads ALL lazy reference images.
+      const maxScroll = scrollTarget.scrollHeight - scrollTarget.clientHeight;
+      console.log(`🎭 Scroll: <${scrollTarget.tagName || 'HTML'}> scrollHeight=${scrollTarget.scrollHeight} max=${maxScroll}`);
       if (maxScroll > 200) {
-        for (let step = 1; step <= 3; step++) {
-          const target = Math.min(maxScroll, (maxScroll * step) / 3);
-          scrollTarget.scrollTop = target;
-          await sleep(400);
+        const steps = CONFIG.CHAR_SCROLL_STEPS || 6;
+        for (let step = 1; step <= steps; step++) {
+          scrollTarget.scrollTop = Math.min(maxScroll, (maxScroll * step) / steps);
+          await sleep(300);
         }
-        // Final: ensure we're at the very bottom
         scrollTarget.scrollTop = maxScroll;
-        await sleep(600);
+        await sleep(500);
       }
-      // Also scroll the window as fallback
       window.scrollTo(0, document.documentElement.scrollHeight);
       await sleep(400);
 
-      // Find character cards on the page by @Name: patterns
-      let cardMap = findCharacterCards();
-
-      if (cardMap.size === 0) {
-        // Retry: maybe content is still loading — wait and try again
-        console.log('🎭 No cards found, retrying after additional wait...');
-        await sleep(1000);
-        cardMap = findCharacterCards();
+      // Step 2: Collect ALL reference image labels in the LEFT panel.
+      // These are divs like "imageElderly wizard holding staff" at x < 200.
+      const allLabels = [];
+      for (const el of document.querySelectorAll('div')) {
+        if (el.closest('#veo3-panel, #veo3-bubble')) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width < 50 || r.width > 800) continue;
+        const t = (el.textContent || '').toLowerCase().trim();
+        if (t.startsWith('image') && t.length > 8 && t.length < 120 && !t.includes('\n')) {
+          const label = t.replace(/^image/, '').trim();
+          if (label.length > 3) {
+            allLabels.push({ el, y: r.top, label });
+          }
+        }
+      }
+      allLabels.sort((a, b) => a.y - b.y);
+      console.log(`🎭 Found ${allLabels.length} reference image labels:`);
+      for (const lb of allLabels) {
+        console.log(`🎭   y=${Math.round(lb.y)}: "${lb.label}"`);
       }
 
-      if (cardMap.size === 0) {
-        console.warn('⚠️ No @Name: character cards found on page');
-        return { success: false, count: 0, error: 'Nenhum personagem @Nome encontrado na página' };
+      if (allLabels.length === 0) {
+        console.warn('🎭 No reference image labels found on page');
+        return { success: false, count: 0, error: 'Nenhum label de referência encontrado' };
       }
 
+      // Step 3: Process each character ONE AT A TIME.
       let count = 0;
 
       for (const name of characterNames) {
-        // Match name to card (exact + fuzzy)
-        let card = cardMap.get(name);
-        if (!card) {
-          for (const [key, c] of cardMap) {
-            if (key.startsWith(name) || name.startsWith(key) || key.includes(name) || name.includes(key)) {
-              card = c;
-              console.log(`🎭 Fuzzy match: "${name}" → "${key}"`);
-              break;
-            }
+        const cn = name.toLowerCase().trim();
+        if (!cn) continue;
+        const words = cn.split('_').filter(w => w.length > 2);
+        console.log(`🎭 @${cn}: looking for label matching words [${words.join(', ')}]...`);
+        updateStatus(`🎭 Localizando @${cn}...`);
+
+        // 3a. Match character name to a label by word overlap.
+        let bestLabel = null;
+        let bestScore = 0;
+        for (const lb of allLabels) {
+          const score = words.filter(w => lb.label.includes(w)).length;
+          if (score > bestScore) { bestScore = score; bestLabel = lb; }
+        }
+
+        if (!bestLabel || bestScore === 0) {
+          console.warn(`🎭 @${cn}: no matching label found (score=0)`);
+          updateStatus(`🎭 ⚠️ @${cn}: referência não encontrada`);
+          continue;
+        }
+        console.log(`🎭 @${cn}: matched label "${bestLabel.label}" (score=${bestScore})`);
+
+        // 3b. Scroll the label into view — this ensures the reference image
+        // near it is LOADED by virtual scrolling and visible for hovering.
+        bestLabel.el.scrollIntoView({ block: 'center', behavior: 'instant' });
+        await sleep(500);
+
+        // 3c. Find the actual reference IMAGE element near the label.
+        // It's an <A> or element with <IMG>, at similar X position, ~100px below the label.
+        // Re-query after scroll to get fresh DOM.
+        const labelRect = bestLabel.el.getBoundingClientRect();
+        let refImage = null;
+        let refImageDist = Infinity;
+
+        for (const el of document.querySelectorAll('a, div')) {
+          if (el.closest('#veo3-panel, #veo3-bubble')) continue;
+          const img = el.querySelector('img') || (el.tagName === 'IMG' ? el : null);
+          if (!img) continue;
+          const r = el.getBoundingClientRect();
+          if (r.width < 200 || r.height < 150) continue; // Must be a substantial image
+          if (r.left > 400) continue; // Must be in the LEFT panel
+          // Must be BELOW the label (reference image is ~100px below its label)
+          const dist = r.top - labelRect.top;
+          if (dist >= -20 && dist < 500 && dist < refImageDist) {
+            refImageDist = dist;
+            refImage = el;
           }
         }
 
-        // RETRY: if card not found, re-scroll to bottom and re-scan
-        if (!card) {
-          console.log(`🎭 @${name}: not found in first scan, re-scrolling to bottom...`);
-          scrollTarget.scrollTop = maxScroll;
-          window.scrollTo(0, document.documentElement.scrollHeight);
-          await sleep(800);
-          const retryMap = findCharacterCards();
-          card = retryMap.get(name);
-          if (!card) {
-            for (const [key, c] of retryMap) {
-              if (key.startsWith(name) || name.startsWith(key) || key.includes(name) || name.includes(key)) {
-                card = c;
-                break;
-              }
-            }
-          }
-        }
-
-        if (!card) {
-          console.warn(`🎭 @${name}: card not found on page after retry`);
-          updateStatus(`🎭 ⚠️ @${name}: não encontrado na página`);
+        if (!refImage) {
+          console.warn(`🎭 @${cn}: no reference image found near label at y=${Math.round(labelRect.top)}`);
+          updateStatus(`🎭 ⚠️ @${cn}: imagem de referência não encontrada`);
           continue;
         }
 
-        // Scroll specific card into view
-        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        await sleep(500);
+        const imgRect = refImage.getBoundingClientRect();
+        console.log(`🎭 @${cn}: reference image <${refImage.tagName}> at (${Math.round(imgRect.left)},${Math.round(imgRect.top)}) ${Math.round(imgRect.width)}x${Math.round(imgRect.height)}`);
 
-        // Click ⋮ → "Incluir no comando"
-        const success = await includeCardViaContextMenu(card, `@${name}`);
+        // 3d. Scroll the IMAGE to the center of the viewport for hovering.
+        refImage.scrollIntoView({ block: 'center', behavior: 'instant' });
+        await sleep(400);
+
+        // 3e. Hover + ⋮ → "Incluir no comando"
+        const success = await includeCardViaContextMenu(refImage, `@${cn}`);
         if (success) {
           count++;
-          updateStatus(`🎭 ✅ @${name} incluído no comando`);
+          updateStatus(`🎭 ✅ @${cn} incluído no comando`);
         } else {
-          updateStatus(`🎭 ⚠️ @${name}: não conseguiu incluir`);
+          updateStatus(`🎭 ⚠️ @${cn}: não conseguiu incluir`);
         }
 
         await sleep(CONFIG.IMAGE_SELECT_DELAY);
+      }
+
+      // Scroll back to prompt area
+      const textbox = document.querySelector('[role="textbox"]');
+      if (textbox) {
+        textbox.scrollIntoView({ block: 'center', behavior: 'instant' });
+        await sleep(300);
       }
 
       console.log(`🎭 Character selection complete: ${count}/${characterNames.length} included`);
@@ -5693,6 +5801,7 @@
     state.startTime = Date.now();
     state.phase = 'sending';
     state._adaptiveDelayMultiplier = 1; // Reset adaptive delay
+    state.cachedCharacterCards = null;   // Clear character card cache for fresh scan
     updateBubbleBadge();
 
     document.getElementById('veo3-start-btn').disabled = true;
