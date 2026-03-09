@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Veo3 Prompt Batch Automator
 // @namespace    https://synkra.io/
-// @version      1.8.0
+// @version      1.8.2
 // @description  Automate batch video generation in Google Veo 3.1 — Send All then Download All
 // @author       j. felipe
 // @match        https://labs.google/fx/pt/tools/flow/project/*
@@ -2680,10 +2680,15 @@
     hoverEl.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: hx, clientY: hy }));
     await sleep(500);
 
-    // Find ⋮ button by position over the image card
+    // Find ⋮ button — search order:
+    //   1. Overlay ⋮ button within image bounds (hover overlay)
+    //   2. Bottom toolbar ⋮ button (♡ 💬 ⋮ bar below card)
+    //   3. Inside card DOM
+    //   4. Nearby ⋮ within expanded Y range (cards can be tall)
     let moreBtn = null;
     const allBtns = document.querySelectorAll('button, [role="button"]');
 
+    // Strategy A: ⋮ button within the image bounds (hover overlay)
     for (const btn of allBtns) {
       if (btn.closest('#veo3-panel, #veo3-bubble')) continue;
       const icon = btn.querySelector('i.google-symbols, i.material-icons, i.material-symbols-outlined, .google-symbols');
@@ -2703,8 +2708,31 @@
       }
     }
 
+    // Strategy B: ⋮ in the bottom toolbar (♡ 💬 ⋮ bar just below the image)
+    // VEO3 March 2026 shows a persistent bar with icons at bottom of each card
     if (!moreBtn) {
-      // Search inside card DOM
+      for (const btn of allBtns) {
+        if (btn.closest('#veo3-panel, #veo3-bubble')) continue;
+        const icon = btn.querySelector('i.google-symbols, .google-symbols');
+        const iconText = icon ? (icon.textContent || '').trim() : '';
+        if (iconText !== 'more_vert' && iconText !== 'more_horiz') continue;
+
+        const bRect = btn.getBoundingClientRect();
+        if (bRect.width === 0 || bRect.height === 0) continue;
+
+        // Bottom toolbar: X within image range, Y is 0-80px BELOW the image bottom
+        const inXRange = bRect.left >= imgRect.left - 50 && bRect.right <= imgRect.right + 50;
+        const belowImage = bRect.top >= imgRect.bottom - 10 && bRect.top <= imgRect.bottom + 80;
+        if (inXRange && belowImage) {
+          moreBtn = btn;
+          console.log(`🎭 ${label}: found ⋮ in bottom toolbar at (${Math.round(bRect.left)},${Math.round(bRect.top)})`);
+          break;
+        }
+      }
+    }
+
+    // Strategy C: Search inside card DOM
+    if (!moreBtn) {
       const cardBtns = card.querySelectorAll('button, [role="button"]');
       for (const btn of cardBtns) {
         if (btn.closest('#veo3-panel, #veo3-bubble')) continue;
@@ -2714,8 +2742,35 @@
           const bRect = btn.getBoundingClientRect();
           if (bRect.top > 0 && bRect.top < 50) continue;
           moreBtn = btn;
+          console.log(`🎭 ${label}: found ⋮ inside card DOM at (${Math.round(bRect.left)},${Math.round(bRect.top)})`);
           break;
         }
+      }
+    }
+
+    // Strategy D: Nearby ⋮ within expanded Y range (within 150px of card center)
+    if (!moreBtn) {
+      const cardCenterY = imgRect.top + imgRect.height / 2;
+      let bestBtn = null;
+      let bestDist = Infinity;
+      for (const btn of allBtns) {
+        if (btn.closest('#veo3-panel, #veo3-bubble')) continue;
+        const icon = btn.querySelector('i.google-symbols, .google-symbols');
+        const iconText = icon ? (icon.textContent || '').trim() : '';
+        if (iconText !== 'more_vert' && iconText !== 'more_horiz') continue;
+        const bRect = btn.getBoundingClientRect();
+        if (bRect.width === 0 || bRect.height === 0) continue;
+        if (bRect.left > imgRect.right + 100) continue; // Not too far right
+        const dist = Math.abs(bRect.top + bRect.height / 2 - cardCenterY);
+        if (dist < 150 && dist < bestDist) {
+          bestDist = dist;
+          bestBtn = btn;
+        }
+      }
+      if (bestBtn) {
+        moreBtn = bestBtn;
+        const br = bestBtn.getBoundingClientRect();
+        console.log(`🎭 ${label}: found nearby ⋮ at (${Math.round(br.left)},${Math.round(br.top)}) dist=${Math.round(bestDist)}`);
       }
     }
 
@@ -3109,8 +3164,55 @@
     return true;
   }
 
+  // Helper: Check if a card is a character DEFINITION card (with @Name: [description])
+  // vs a prompt MENTION card (just @Name in a generated video/image prompt).
+  // Definition cards contain "@Name: [description text" — the square bracket is
+  // the key distinction: it's only in the original character definitions.
+  function isCharDefinitionCard(card, charName) {
+    const text = (card.textContent || '');
+    // Build a regex: @char_name (underscores can be _ or space) followed by : and [
+    const namePattern = charName.replace(/_/g, '[_\\s]');
+    const defRegex = new RegExp('@' + namePattern + '\\s*:\\s*\\[', 'i');
+    return defRegex.test(text);
+  }
+
+  // Helper: Scan the bottom of the scrollable area for character reference images.
+  // Returns an image element <A> or <DIV> with <IMG> inside, near a @Name: definition text.
+  function findReferenceImageAtBottom(scrollTarget, charName) {
+    // We should already be scrolled to bottom. Scan visible elements.
+    const namePattern = charName.replace(/_/g, '[_\\s]');
+    const defRegex = new RegExp('@' + namePattern + '\\s*:', 'i');
+
+    // Find all divs with the @Name: text that are currently visible
+    const candidates = [];
+    for (const el of document.querySelectorAll('div, span')) {
+      if (el.closest('#veo3-panel, #veo3-bubble')) continue;
+      const text = (el.textContent || '').substring(0, 500);
+      if (!defRegex.test(text)) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 50 || r.height < 20) continue;
+      // Check NO video — reference images don't have video elements
+      if (el.querySelector('video')) continue;
+      // Check HAS image
+      if (el.querySelector('img')) {
+        candidates.push({ el, y: r.top, width: r.width, height: r.height });
+      }
+    }
+
+    if (candidates.length === 0) return null;
+
+    // Prefer the candidate furthest DOWN the page (closest to bottom = reference images)
+    candidates.sort((a, b) => b.y - a.y);
+    const best = candidates[0];
+    console.log(`🎭 findReferenceImageAtBottom(@${charName}): found ${candidates.length} candidate(s), using one at y=${Math.round(best.y)}`);
+
+    // Now find the actual image element inside this card
+    const img = best.el.querySelector('a img, a[href]') ? best.el.querySelector('a') : null;
+    return img || best.el;
+  }
+
   // Selects specific character images by auto-detecting @Name: text on page
-  // Uses the ⋮ context menu → "Incluir no comando" flow
+  // Uses findCharacterCards() for reliable @Name: detection, then ⋮ → "Incluir no comando"
   async function selectCharacterImages(characterNames) {
     if (state.imageSelectionInProgress) {
       return { success: false, count: 0, error: 'Seleção já em andamento' };
@@ -3121,18 +3223,18 @@
       console.log(`🎭 Selecting characters: ${characterNames.join(', ')}`);
 
       // ═══════════════════════════════════════════════════════════════════════
-      // DIRECT REFERENCE IMAGE APPROACH:
+      // HYBRID APPROACH (v1.8.1):
       //
-      // 1. Scroll to bottom (loads lazy reference images)
-      // 2. For each [CHARS:] character:
-      //    a. Find its reference image LABEL (e.g. "imageElderly wizard holding staff")
-      //    b. Find the actual <A> image element near that label (x<200, large)
-      //    c. Scroll the image to the CENTER of the viewport
-      //    d. Call includeCardViaContextMenu (hover → ⋮ → "Incluir no comando")
+      // 1. Scroll to bottom (loads lazy reference images via virtual scroll)
+      // 2. Use findCharacterCards() to detect @Name: text patterns in DOM
+      //    — this is reliable because it matches the ACTUAL character handle
+      //    in the page text, NOT fragile image description labels
+      // 3. If the detected card is in the RIGHT panel (x > 1600), find the
+      //    corresponding LEFT-panel image card for hovering
+      // 4. Scroll card into view → includeCardViaContextMenu
       //
-      // WHY: findCharacterCards() was returning RIGHT-PANEL text cards (all at
-      // same position x=1861) instead of LEFT-PANEL reference images (x=84).
-      // This approach goes DIRECTLY to the reference images via their labels.
+      // FALLBACK: If findCharacterCards() returns 0, try the old label-matching
+      // approach (word overlap with image description labels) as last resort.
       // ═══════════════════════════════════════════════════════════════════════
 
       // Find the scrollable container
@@ -3164,31 +3266,9 @@
       window.scrollTo(0, document.documentElement.scrollHeight);
       await sleep(400);
 
-      // Step 2: Collect ALL reference image labels in the LEFT panel.
-      // These are divs like "imageElderly wizard holding staff" at x < 200.
-      const allLabels = [];
-      for (const el of document.querySelectorAll('div')) {
-        if (el.closest('#veo3-panel, #veo3-bubble')) continue;
-        const r = el.getBoundingClientRect();
-        if (r.width < 50 || r.width > 800) continue;
-        const t = (el.textContent || '').toLowerCase().trim();
-        if (t.startsWith('image') && t.length > 8 && t.length < 120 && !t.includes('\n')) {
-          const label = t.replace(/^image/, '').trim();
-          if (label.length > 3) {
-            allLabels.push({ el, y: r.top, label });
-          }
-        }
-      }
-      allLabels.sort((a, b) => a.y - b.y);
-      console.log(`🎭 Found ${allLabels.length} reference image labels:`);
-      for (const lb of allLabels) {
-        console.log(`🎭   y=${Math.round(lb.y)}: "${lb.label}"`);
-      }
-
-      if (allLabels.length === 0) {
-        console.warn('🎭 No reference image labels found on page');
-        return { success: false, count: 0, error: 'Nenhum label de referência encontrado' };
-      }
+      // Step 2: Use findCharacterCards() — reliable @Name: pattern matching.
+      const charCards = findCharacterCards();
+      console.log(`🎭 findCharacterCards: ${charCards.size} character(s) detected: ${[...charCards.keys()].join(', ')}`);
 
       // Step 3: Process each character ONE AT A TIME.
       let count = 0;
@@ -3196,67 +3276,184 @@
       for (const name of characterNames) {
         const cn = name.toLowerCase().trim();
         if (!cn) continue;
-        const words = cn.split('_').filter(w => w.length > 2);
-        console.log(`🎭 @${cn}: looking for label matching words [${words.join(', ')}]...`);
+        console.log(`🎭 @${cn}: searching...`);
         updateStatus(`🎭 Localizando @${cn}...`);
 
-        // 3a. Match character name to a label by word overlap.
-        let bestLabel = null;
-        let bestScore = 0;
-        for (const lb of allLabels) {
-          const score = words.filter(w => lb.label.includes(w)).length;
-          if (score > bestScore) { bestScore = score; bestLabel = lb; }
-        }
+        // 3a. Look up in the findCharacterCards map (primary strategy)
+        let card = charCards.get(cn);
 
-        if (!bestLabel || bestScore === 0) {
-          console.warn(`🎭 @${cn}: no matching label found (score=0)`);
-          updateStatus(`🎭 ⚠️ @${cn}: referência não encontrada`);
-          continue;
-        }
-        console.log(`🎭 @${cn}: matched label "${bestLabel.label}" (score=${bestScore})`);
-
-        // 3b. Scroll the label into view — this ensures the reference image
-        // near it is LOADED by virtual scrolling and visible for hovering.
-        bestLabel.el.scrollIntoView({ block: 'center', behavior: 'instant' });
-        await sleep(500);
-
-        // 3c. Find the actual reference IMAGE element near the label.
-        // It's an <A> or element with <IMG>, at similar X position, ~100px below the label.
-        // Re-query after scroll to get fresh DOM.
-        const labelRect = bestLabel.el.getBoundingClientRect();
-        let refImage = null;
-        let refImageDist = Infinity;
-
-        for (const el of document.querySelectorAll('a, div')) {
-          if (el.closest('#veo3-panel, #veo3-bubble')) continue;
-          const img = el.querySelector('img') || (el.tagName === 'IMG' ? el : null);
-          if (!img) continue;
-          const r = el.getBoundingClientRect();
-          if (r.width < 200 || r.height < 150) continue; // Must be a substantial image
-          if (r.left > 400) continue; // Must be in the LEFT panel
-          // Must be BELOW the label (reference image is ~100px below its label)
-          const dist = r.top - labelRect.top;
-          if (dist >= -20 && dist < 500 && dist < refImageDist) {
-            refImageDist = dist;
-            refImage = el;
+        // 3a-fallback: partial match (e.g., user typed "edgar" but page has "edgar_cayce")
+        if (!card) {
+          for (const [key, val] of charCards) {
+            if (key.includes(cn) || cn.includes(key)) {
+              card = val;
+              console.log(`🎭 @${cn}: partial match with @${key}`);
+              break;
+            }
           }
         }
 
-        if (!refImage) {
-          console.warn(`🎭 @${cn}: no reference image found near label at y=${Math.round(labelRect.top)}`);
-          updateStatus(`🎭 ⚠️ @${cn}: imagem de referência não encontrada`);
+        // 3a-fallback2: old label-matching approach as last resort
+        if (!card) {
+          console.log(`🎭 @${cn}: not in findCharacterCards map, trying label-matching fallback...`);
+          const words = cn.split('_').filter(w => w.length > 2);
+
+          // Collect image labels
+          const allLabels = [];
+          for (const el of document.querySelectorAll('div')) {
+            if (el.closest('#veo3-panel, #veo3-bubble')) continue;
+            const r = el.getBoundingClientRect();
+            if (r.width < 50 || r.width > 800) continue;
+            const t = (el.textContent || '').toLowerCase().trim();
+            if (t.startsWith('image') && t.length > 8 && t.length < 120 && !t.includes('\n')) {
+              const label = t.replace(/^image/, '').trim();
+              if (label.length > 3) {
+                allLabels.push({ el, y: r.top, label });
+              }
+            }
+          }
+
+          let bestLabel = null;
+          let bestScore = 0;
+          for (const lb of allLabels) {
+            const score = words.filter(w => lb.label.includes(w)).length;
+            if (score > bestScore) { bestScore = score; bestLabel = lb; }
+          }
+
+          if (bestLabel && bestScore > 0) {
+            console.log(`🎭 @${cn}: label fallback matched "${bestLabel.label}" (score=${bestScore})`);
+            bestLabel.el.scrollIntoView({ block: 'center', behavior: 'instant' });
+            await sleep(500);
+
+            // Find reference image near the label
+            const labelRect = bestLabel.el.getBoundingClientRect();
+            let refImage = null;
+            let refImageDist = Infinity;
+            for (const el of document.querySelectorAll('a, div')) {
+              if (el.closest('#veo3-panel, #veo3-bubble')) continue;
+              const img = el.querySelector('img') || (el.tagName === 'IMG' ? el : null);
+              if (!img) continue;
+              const r = el.getBoundingClientRect();
+              if (r.width < 200 || r.height < 150) continue;
+              if (r.left > 400) continue;
+              const dist = r.top - labelRect.top;
+              if (dist >= -20 && dist < 500 && dist < refImageDist) {
+                refImageDist = dist;
+                refImage = el;
+              }
+            }
+            if (refImage) card = refImage;
+          }
+        }
+
+        if (!card) {
+          console.warn(`🎭 @${cn}: could not locate character card or image`);
+          updateStatus(`🎭 ⚠️ @${cn}: referência não encontrada`);
           continue;
         }
 
-        const imgRect = refImage.getBoundingClientRect();
-        console.log(`🎭 @${cn}: reference image <${refImage.tagName}> at (${Math.round(imgRect.left)},${Math.round(imgRect.top)}) ${Math.round(imgRect.width)}x${Math.round(imgRect.height)}`);
+        // ═══════════════════════════════════════════════════════════════════════
+        // 3-VALIDATE: Ensure this is a REFERENCE DEFINITION card, not a
+        // generated result (video/image) that just MENTIONS the character.
+        //
+        // Reference definitions: @Name: [Caucasian male, 40s, armor...]
+        // Prompt mentions:       @Name standing in the temple... (no brackets)
+        //
+        // If we got a prompt-mention card or a video card, re-scan the bottom
+        // of the timeline where the original reference images always live.
+        // ═══════════════════════════════════════════════════════════════════════
+        const cardHasVideo = !!card.querySelector('video');
+        const isDefinition = isCharDefinitionCard(card, cn);
 
-        // 3d. Scroll the IMAGE to the center of the viewport for hovering.
-        refImage.scrollIntoView({ block: 'center', behavior: 'instant' });
+        if (cardHasVideo || !isDefinition) {
+          const reason = cardHasVideo ? 'card has video' : 'card is prompt mention (no definition)';
+          console.log(`🎭 @${cn}: ${reason} — re-scanning bottom for reference image...`);
+
+          // Ensure we're at the bottom where reference images live
+          scrollTarget.scrollTop = scrollTarget.scrollHeight - scrollTarget.clientHeight;
+          await sleep(400);
+
+          const refCard = findReferenceImageAtBottom(scrollTarget, cn);
+          if (refCard) {
+            card = refCard;
+            console.log(`🎭 @${cn}: found reference image at bottom ✅`);
+          } else if (cardHasVideo) {
+            // Video card with no image alternative — skip entirely
+            console.warn(`🎭 @${cn}: only found video card, no reference image — skipping`);
+            updateStatus(`🎭 ⚠️ @${cn}: apenas vídeo encontrado, sem imagem de referência`);
+            continue;
+          }
+          // If !isDefinition but no video and no bottom ref found, use what we have
+        }
+
+        // 3b. Determine if we need to find the left-panel image.
+        // findCharacterCards() may return a full-width row card (2177px wide) or
+        // a right-panel text card (x > 1600). Either way, we need the hoverable
+        // image element in the LEFT panel for the ⋮ context menu.
+        let imageCard = card;
+        let cardRect = card.getBoundingClientRect();
+        console.log(`🎭 @${cn}: card at (${Math.round(cardRect.left)},${Math.round(cardRect.top)}) ${Math.round(cardRect.width)}x${Math.round(cardRect.height)}`);
+
+        // If card is off-screen (negative Y or too far down), scroll it into view first
+        if (cardRect.top < -50 || cardRect.bottom > window.innerHeight + 50) {
+          card.scrollIntoView({ block: 'center', behavior: 'instant' });
+          await sleep(500);
+          cardRect = card.getBoundingClientRect();
+          console.log(`🎭 @${cn}: after scroll → (${Math.round(cardRect.left)},${Math.round(cardRect.top)}) ${Math.round(cardRect.width)}x${Math.round(cardRect.height)}`);
+        }
+
+        // If card has an <img> inside and is in the left panel area, use it directly
+        const cardHasImg = !!card.querySelector('img');
+
+        // Right-panel only card (no image, or x > 1600 with small width)
+        const isRightPanelOnly = (cardRect.left > 1600) || (!cardHasImg && cardRect.width < 400);
+
+        if (isRightPanelOnly) {
+          console.log(`🎭 @${cn}: right-panel card, searching for left-panel image...`);
+          // Find the image element in the left panel at a similar Y position
+          let bestImage = null;
+          let bestDist = Infinity;
+
+          for (const el of document.querySelectorAll('a, div')) {
+            if (el.closest('#veo3-panel, #veo3-bubble')) continue;
+            const img = el.querySelector('img');
+            if (!img) continue;
+            const r = el.getBoundingClientRect();
+            if (r.width < 200 || r.height < 150) continue;
+            if (r.left > 400) continue; // Must be in the left panel
+            const dist = Math.abs(r.top - cardRect.top);
+            if (dist < bestDist) {
+              bestDist = dist;
+              bestImage = el;
+            }
+          }
+
+          if (bestImage) {
+            imageCard = bestImage;
+            const ir = bestImage.getBoundingClientRect();
+            console.log(`🎭 @${cn}: found left-panel image at (${Math.round(ir.left)},${Math.round(ir.top)}) ${Math.round(ir.width)}x${Math.round(ir.height)}, dist=${Math.round(bestDist)}`);
+          } else {
+            console.warn(`🎭 @${cn}: no left-panel image found near right-panel card`);
+          }
+        } else if (cardRect.width > 1500 && cardHasImg) {
+          // Full-width row card — find the <A> or image container inside
+          const innerImg = card.querySelector('a img, a[href] img');
+          const innerLink = innerImg ? innerImg.closest('a') : null;
+          if (innerLink) {
+            const lr = innerLink.getBoundingClientRect();
+            if (lr.width > 200 && lr.height > 150) {
+              imageCard = innerLink;
+              console.log(`🎭 @${cn}: using inner <A> image at (${Math.round(lr.left)},${Math.round(lr.top)}) ${Math.round(lr.width)}x${Math.round(lr.height)}`);
+            }
+          }
+        }
+
+        // 3c. Scroll the IMAGE card to center of viewport for hovering.
+        imageCard.scrollIntoView({ block: 'center', behavior: 'instant' });
         await sleep(400);
 
-        // 3e. Hover + ⋮ → "Incluir no comando"
-        const success = await includeCardViaContextMenu(refImage, `@${cn}`);
+        // 3d. Hover + ⋮ → "Incluir no comando"
+        const success = await includeCardViaContextMenu(imageCard, `@${cn}`);
         if (success) {
           count++;
           updateStatus(`🎭 ✅ @${cn} incluído no comando`);
