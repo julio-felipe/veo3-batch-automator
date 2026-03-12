@@ -2769,47 +2769,8 @@
     }
 
     if (!moreBtn) {
-      // VEO3 Flow no longer shows ⋮ on cards.
-      // Try the "add" button in the right panel (x > 1600, icon="add").
-      console.log(`🎭 ${label}: ⋮ not found — trying right-panel "add" button...`);
-
-      const rpBtns = document.querySelectorAll('button, [role="button"]');
-      let addBtn = null;
-      let addBtnDist = Infinity;
-
-      for (const btn of rpBtns) {
-        if (btn.closest('#veo3-panel, #veo3-bubble')) continue;
-        const icon = btn.querySelector('i.google-symbols, .google-symbols, i.material-icons');
-        const iconText = icon ? (icon.textContent || '').trim() : '';
-        if (iconText !== 'add') continue;
-        const btnText = (btn.textContent || '').toLowerCase();
-        if (btnText.includes('adicionar') || btnText.includes('mídia')) continue;
-        const bRect = btn.getBoundingClientRect();
-        if (bRect.width === 0 || bRect.height === 0) continue;
-        if (bRect.left > 1600) {
-          const dist = Math.abs(bRect.top - cardRect.top);
-          if (dist < addBtnDist) {
-            addBtnDist = dist;
-            addBtn = btn;
-          }
-        }
-      }
-
-      if (addBtn) {
-        const abr = addBtn.getBoundingClientRect();
-        console.log(`🎭 ${label}: found "add" at (${Math.round(abr.left)},${Math.round(abr.top)}), clicking...`);
-        addBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        await sleep(300);
-        addBtn.click();
-        await sleep(400);
-        triggerReactClick(addBtn);
-        await sleep(400);
-        console.log(`🎭 ✅ ${label}: included via "add" button`);
-        hoverEl.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }));
-        return true;
-      }
-
-      console.warn(`🎭 ${label}: ⋮ and "add" button both not found`);
+      // ⋮ not found — do NOT use right-panel "add" button (traditional method only).
+      console.warn(`🎭 ${label}: ⋮ not found — skipping (traditional method only)`);
       hoverEl.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }));
       return false;
     }
@@ -3427,7 +3388,9 @@
             const ir = bestImage.getBoundingClientRect();
             console.log(`🎭 @${cn}: found left-panel image at (${Math.round(ir.left)},${Math.round(ir.top)}) ${Math.round(ir.width)}x${Math.round(ir.height)}, dist=${Math.round(bestDist)}`);
           } else {
-            console.warn(`🎭 @${cn}: no left-panel image found near right-panel card`);
+            console.warn(`🎭 @${cn}: no left-panel image found near right-panel card — skipping`);
+            updateStatus(`🎭 ⚠️ @${cn}: imagem no painel esquerdo não encontrada`);
+            continue;
           }
         } else if (cardRect.width > 1500 && cardHasImg) {
           // Full-width row card — find the <A> or image container inside
@@ -3634,6 +3597,11 @@
 
       let count = 0;
 
+      // Pattern to detect character DEFINITION cards (@Name: [description]).
+      // These should only be selected by [CHARS:] via selectCharacterImages(),
+      // never by [IMGS:] keyword matching — prevents "mystic" matching @The_French_Mystic.
+      const charDefPattern = /@\w[\w-]*\s*:\s*\[/;
+
       for (const keyword of keywords) {
         const kw = keyword.toLowerCase().trim();
         if (!kw) continue;
@@ -3653,6 +3621,8 @@
           let bestScore = 0;
 
           for (const ct of cardTexts) {
+            // Skip character definition cards — only [CHARS:] should select these
+            if (charDefPattern.test(ct.text)) continue;
             if (!ct.text.includes(kw)) continue;
             // Score: prefer exact word boundary match
             const wordMatch = ct.text.includes(' ' + kw + ' ') || ct.text.includes(kw + ' ') ||
@@ -3669,6 +3639,7 @@
             const kwWords = kw.split(/\s+/);
             if (kwWords.length > 1) {
               for (const ct of cardTexts) {
+                if (charDefPattern.test(ct.text)) continue;
                 const matchedWords = kwWords.filter(w => ct.text.includes(w));
                 const score = matchedWords.length / kwWords.length;
                 if (score > 0.5 && score > bestScore) {
